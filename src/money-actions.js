@@ -13,8 +13,10 @@ import * as razorpay from "./razorpay-client.js";
 import { authorize } from "./policy-engine.js";
 import { RULES_VERSION } from "./policy-rules.js";
 import { appendEvent } from "./audit.js";
-import { findCart, findProduct, saveOrder, findOrder } from "./db.js";
-import { createMission, getMission, transition } from "./missions.js";
+import { findCart, findProduct, saveOrder, findOrder, findOrderByPayment, setOrderStatus, findLatestOrderByMission } from "./db.js";
+import { createMission, getMission, transition, TransitionError } from "./missions.js";
+
+const SYSTEM_ACTOR = { type: "system", id: "razorpay-webhook" };
 
 /** Money-action-level failure with HTTP mapping (status/code duck-typed by the express error middleware). */
 class MoneyActionError extends Error {
@@ -239,12 +241,187 @@ export async function refund({ paymentId, amountPaise, reason, actor }) {
 }
 
 /**
- * confirmPayment — Phase 3 (called ONLY by webhooks.js after HMAC + idempotency).
- * @throws {MoneyActionError} 501 until Phase 3
+ * Resolve which of OUR orders a webhook payment belongs to.
+ *
+ * Ground truth (live payloads, 2026-08-23): payments made via a payment link
+ * carry the LINK'S INTERNAL order_id — not the order we created and passed as
+ * reference_id. But the notes we set on the payment link ({missionId,
+ * correlationId}) propagate onto the payment entity, so:
+ *   1) try the payment's order_id directly (non-link flows), then
+ *   2) fall back to notes.missionId → newest order for that mission.
+ * Notes are safe to trust here: we authored them on the link, HMAC already
+ * verified the sender, and confirmPayment still re-verifies the amount
+ * against the resolved order via the API.
+ *
+ * @param {{orderId?:string|null, missionHint?:string|null}} input
+ * @returns {object|undefined} resolved order row
  */
-export async function confirmPayment({ orderId, paymentId, source }) {
-  void orderId; void paymentId; void source;
-  throw new MoneyActionError(501, "NOT_IMPLEMENTED", "confirmPayment lands in Phase 3 (webhooks)");
+export function resolveOrderForPayment({ orderId, missionHint }) {
+  if (orderId) {
+    const direct = findOrder(orderId);
+    if (direct) return direct;
+  }
+  if (missionHint) {
+    return findLatestOrderByMission(missionHint);
+  }
+  return undefined;
+}
+
+/**
+ * confirmPayment — called ONLY by webhooks.js after HMAC verification and the
+ * duplicate check. Trusts the Razorpay API, not the webhook payload: re-fetches
+ * the payment and re-checks the amount against the order before confirming.
+ *
+ * Fail-closed: any ambiguity (amount mismatch, odd status) leaves mission state
+ * untouched and writes an audit event — never silently "makes it work" (R4).
+ *
+ * @param {{orderId?:string|null, paymentId:string, missionHint?:string|null, source:string}} input
+ * @returns {Promise<{status:string, reason?:string}>}
+ */
+export async function confirmPayment({ orderId, paymentId, missionHint, source }) {
+  const order = resolveOrderForPayment({ orderId, missionHint });
+  if (!order) {
+    appendEvent({
+      correlationId: `order_${orderId}`,
+      actor: SYSTEM_ACTOR,
+      action: "confirm_payment",
+      decision: { result: "info", reason: "webhook for unknown order — no state change", ruleEvals: [] },
+      entities: { orderId, paymentId },
+      outcome: "info",
+    });
+    return { status: "ignored", reason: "unknown order" };
+  }
+  if (order.status === "captured") {
+    return { status: "already_confirmed" };
+  }
+
+  // API truth, not webhook trust.
+  const payment = await razorpay.fetchPayment(paymentId);
+  if (payment.amount !== order.amountPaise) {
+    const reason =
+      `payment amount mismatch: order ${orderId} expects ${order.amountPaise} paise, ` +
+      `payment ${paymentId} is ${payment.amount} paise — hard stop, state untouched`;
+    appendEvent({
+      correlationId: order.missionId,
+      actor: SYSTEM_ACTOR,
+      action: "confirm_payment",
+      amountPaise: payment.amount,
+      decision: { result: "deny", reason, ruleEvals: [] },
+      entities: { orderId, paymentId },
+      outcome: "failed",
+    });
+    console.error(`[money] ${reason}`);
+    return { status: "amount_mismatch", reason };
+  }
+  if (payment.status !== "captured") {
+    return { status: "ignored", reason: `payment status is "${payment.status}", not "captured"` };
+  }
+
+  setOrderStatus(orderId, "captured", paymentId);
+  let missionState;
+  try {
+    missionState = transition(order.missionId, "CONFIRMED").state;
+  } catch (err) {
+    if (err instanceof TransitionError) {
+      // e.g. already CONFIRMED via a racing delivery; the captured flag above
+      // keeps further deliveries cheap. Audit the out-of-order arrival.
+      appendEvent({
+        correlationId: order.missionId,
+        actor: SYSTEM_ACTOR,
+        action: "confirm_payment",
+        amountPaise: payment.amount,
+        decision: { result: "info", reason: `out-of-order captured event (mission in ${err.message})`, ruleEvals: [] },
+        entities: { orderId, paymentId },
+        outcome: "info",
+      });
+      return { status: "ignored_out_of_order", reason: err.message };
+    }
+    throw err;
+  }
+
+  appendEvent({
+    correlationId: order.missionId,
+    actor: SYSTEM_ACTOR,
+    action: "confirm_payment",
+    amountPaise: payment.amount,
+    decision: { result: "allow", reason: `payment captured via ${source}; amount verified vs order`, ruleEvals: [] },
+    entities: { orderId, paymentId },
+    outcome: "succeeded",
+  });
+  return { status: "confirmed", missionState };
+}
+
+/**
+ * noteFailedPayment — payment.failed webhook: order → payment_failed, mission
+ * PAYING → FAILED (retry logic itself is Phase 7), audit the failure.
+ * @param {{orderId:string, paymentId:string, amountPaise?:number, reason:string}} input
+ * @returns {Promise<{status:string, reason?:string}>}
+ */
+export async function noteFailedPayment({ orderId, paymentId, missionHint, amountPaise, reason }) {
+  const order = resolveOrderForPayment({ orderId, missionHint });
+  if (!order) {
+    appendEvent({
+      correlationId: `order_${orderId}`,
+      actor: SYSTEM_ACTOR,
+      action: "payment_failed",
+      decision: { result: "info", reason: "failed-payment webhook for unknown order — no state change", ruleEvals: [] },
+      entities: { orderId, paymentId },
+      outcome: "info",
+    });
+    return { status: "ignored", reason: "unknown order" };
+  }
+
+  setOrderStatus(orderId, "payment_failed", paymentId);
+  let missionState;
+  try {
+    missionState = transition(order.missionId, "FAILED").state;
+  } catch (err) {
+    if (err instanceof TransitionError) {
+      appendEvent({
+        correlationId: order.missionId,
+        actor: SYSTEM_ACTOR,
+        action: "payment_failed",
+        amountPaise: amountPaise ?? null,
+        decision: { result: "info", reason: `out-of-order payment.failed (${err.message})`, ruleEvals: [] },
+        entities: { orderId, paymentId },
+        outcome: "info",
+      });
+      return { status: "ignored_out_of_order", reason: err.message };
+    }
+    throw err;
+  }
+
+  appendEvent({
+    correlationId: order.missionId,
+    actor: SYSTEM_ACTOR,
+    action: "payment_failed",
+    amountPaise: amountPaise ?? null,
+    decision: { result: "deny", reason: `payment failed at Razorpay: ${reason}`, ruleEvals: [] },
+    entities: { orderId, paymentId },
+    outcome: "failed",
+  });
+  return { status: "failed", missionState };
+}
+
+/**
+ * noteRefundProcessed — refund.processed webhook: audit-only for now (the
+ * refund money-action E2E is Phase 7). Correlates to the mission via the
+ * stored payment_id → order mapping.
+ * @param {{refundId?:string, paymentId?:string, amountPaise?:number}} input
+ * @returns {Promise<{status:string}>}
+ */
+export async function noteRefundProcessed({ refundId, paymentId, amountPaise }) {
+  const order = paymentId ? findOrderByPayment(paymentId) : undefined;
+  appendEvent({
+    correlationId: order ? order.missionId : `refund_${paymentId ?? "unknown"}`,
+    actor: SYSTEM_ACTOR,
+    action: "refund_processed",
+    amountPaise: amountPaise ?? null,
+    decision: { result: "info", reason: `refund.processed webhook noted${order ? "" : " (order unknown)"}`, ruleEvals: [] },
+    entities: { paymentId, refundId, orderId: order?.orderId },
+    outcome: "info",
+  });
+  return { status: "noted" };
 }
 
 /**

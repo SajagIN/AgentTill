@@ -1,0 +1,159 @@
+/**
+ * Razorpay webhooks: verify (timing-safe HMAC over the RAW body) → idempotency
+ * (unique event_id) → dispatch. The express route in server.js registers this
+ * handler with express.raw() BEFORE the JSON parser — signature is computed
+ * over raw bytes, so parsing order is law (Architecture §8, R3).
+ *
+ * Fail-closed: bad signature → 401 with ZERO state change; missing secret →
+ * 503 (nothing is processed); processing errors surface and Razorpay retries.
+ * The idempotency row is written only AFTER successful processing, so a failed
+ * run never swallows a retry.
+ */
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { config } from "./config.js";
+import { isDuplicateWebhookEvent, recordWebhookEvent } from "./db.js";
+import { confirmPayment, noteFailedPayment, noteRefundProcessed } from "./money-actions.js";
+
+/** HMAC verification failure — 401, no state change (R4). */
+export class WebhookVerificationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WebhookVerificationError";
+    this.status = 401;
+    this.code = "WEBHOOK_SIGNATURE_INVALID";
+  }
+}
+
+/** Webhook secret not configured — 503, fail-closed (R4). */
+export class WebhookMisconfiguredError extends Error {
+  constructor() {
+    super("RAZORPAY_WEBHOOK_SECRET is not configured — refusing to process webhooks (fail closed)");
+    this.name = "WebhookMisconfiguredError";
+    this.status = 503;
+    this.code = "WEBHOOK_SECRET_MISSING";
+  }
+}
+
+/** Structurally invalid payload (valid signature, bad JSON/shape) — 400. */
+export class WebhookPayloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WebhookPayloadError";
+    this.status = 400;
+    this.code = "WEBHOOK_PAYLOAD_INVALID";
+  }
+}
+
+/** Event types this build acts on; anything else is stored + ignored. */
+const SUPPORTED_EVENT_TYPES = new Set(["payment.captured", "payment.failed", "refund.processed"]);
+
+/** @param {string} eventType @returns {boolean} */
+export function isSupportedEventType(eventType) {
+  return SUPPORTED_EVENT_TYPES.has(eventType);
+}
+
+/**
+ * Verify X-Razorpay-Signature = HMAC-SHA256(rawBody, secret), hex, timing-safe.
+ * @param {Buffer} rawBody exact bytes received
+ * @param {string|undefined} signature header value
+ * @returns {void} @throws {WebhookVerificationError|WebhookMisconfiguredError}
+ */
+export function verifySignature(rawBody, signature) {
+  if (!config.razorpayWebhookSecret) {
+    throw new WebhookMisconfiguredError();
+  }
+  const expected = createHmac("sha256", config.razorpayWebhookSecret).update(rawBody).digest("hex");
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(String(signature ?? ""), "utf8");
+  // Length check first — timingSafeEqual throws on mismatched lengths.
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    throw new WebhookVerificationError("webhook signature verification failed");
+  }
+}
+
+/**
+ * Full pipeline: verify → parse → duplicate check → dispatch → record event id.
+ * @param {{eventId:string|undefined, rawBody:Buffer, signature:string|undefined}} input
+ * @returns {Promise<{duplicate:boolean, eventType:string, result?:object}>}
+ */
+export async function processWebhook({ eventId, rawBody, signature }) {
+  verifySignature(rawBody, signature);
+
+  if (!eventId) {
+    throw new WebhookPayloadError("missing X-Razorpay-Event-Id header");
+  }
+
+  let body;
+  try {
+    body = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    throw new WebhookPayloadError("webhook body is not valid JSON");
+  }
+  const eventType = typeof body.event === "string" ? body.event : "unknown";
+
+  if (isDuplicateWebhookEvent(eventId)) {
+    console.log(`[webhook] duplicate ${eventId} (${eventType}) — stored, not reprocessed`);
+    return { duplicate: true, eventType };
+  }
+
+  console.log(`[webhook] processing ${eventId} (${eventType})`);
+  if (body?.payload) {
+    // Payload ground-truth logging: prints the entity we're about to act on.
+    // Test-mode data only — never contains keys or signatures.
+    const entityKey = Object.keys(body.payload)[0];
+    const entity = body.payload[entityKey]?.entity;
+    if (entity) console.log(`[webhook] payload ${eventType}·${entityKey}: ${JSON.stringify(entity)}`);
+  }
+  let result;
+  if (eventType === "payment.captured" || eventType === "payment.failed") {
+    const entity = body?.payload?.payment?.entity;
+    if (!entity?.order_id || !entity?.id) {
+      throw new WebhookPayloadError(`malformed ${eventType} payload: missing payload.payment.entity ids`);
+    }
+    result =
+      eventType === "payment.captured"
+        ? await confirmPayment({
+            orderId: entity.order_id,
+            paymentId: entity.id,
+            missionHint: entity.notes?.missionId ?? entity.notes?.correlationId ?? null,
+            source: "webhook",
+          })
+        : await noteFailedPayment({
+            orderId: entity.order_id,
+            paymentId: entity.id,
+            missionHint: entity.notes?.missionId ?? entity.notes?.correlationId ?? null,
+            amountPaise: entity.amount,
+            reason: entity.error_description ?? "payment.failed webhook",
+          });
+  } else if (eventType === "refund.processed") {
+    const entity = body?.payload?.refund?.entity;
+    result = await noteRefundProcessed({
+      refundId: entity?.id,
+      paymentId: entity?.payment_id,
+      amountPaise: entity?.amount,
+    });
+  } else {
+    result = {
+      status: "ignored",
+      reason: isSupportedEventType(eventType) ? "no handler" : `unhandled event type: ${eventType}`,
+    };
+  }
+
+  recordWebhookEvent(eventId, eventType);
+  console.log(`[webhook] done ${eventId} (${eventType}) → ${JSON.stringify(result)}`);
+  return { duplicate: false, eventType, result };
+}
+
+/**
+ * Express handler — server.js mounts this with express.raw() BEFORE json().
+ * @type {import("express").RequestHandler}
+ */
+export function webhookHandler(req, res, next) {
+  processWebhook({
+    eventId: req.get("X-Razorpay-Event-Id"),
+    rawBody: req.body, // Buffer — express.raw() guarantees it for application/json
+    signature: req.get("X-Razorpay-Signature"),
+  })
+    .then((out) => res.status(200).json({ received: true, ...out }))
+    .catch(next);
+}

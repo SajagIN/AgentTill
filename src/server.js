@@ -10,11 +10,15 @@ import express from "express";
 import { config } from "./config.js";
 import { ping } from "./db.js";
 import { api } from "./routes.js";
+import { webhookHandler } from "./webhooks.js";
 
 const app = express();
 
-// [Phase 3] app.post("/webhooks/razorpay", express.raw({ type: "application/json" }), …)
-//           goes HERE — above express.json(), never below it.
+// WEBHOOK ROUTE FIRST — express.raw() must own the body BEFORE the JSON
+// parser so HMAC is computed over the exact received bytes (Architecture §8).
+// Registering this below express.json() is the #1 known failure mode.
+app.post("/webhooks/razorpay", express.raw({ type: "application/json" }), webhookHandler);
+
 app.use(express.json());
 
 app.use("/", api); // /catalog, /quote, /checkout, /missions — thin routers (routes.js)

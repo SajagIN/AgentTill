@@ -6,6 +6,7 @@
  * Schema history (append-only — later phases ADD tables, never mutate old ones):
  *   Phase 1 — products, carts
  *   Phase 2 — missions, orders, audit_events
+ *   Phase 3 — webhook_events (idempotency), orders.payment_id (light migration)
  */
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -68,7 +69,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_audit_correlation ON audit_events (correlation_id);
   CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events (ts);
+
+  CREATE TABLE IF NOT EXISTS webhook_events (
+    event_id     TEXT PRIMARY KEY,
+    event_type   TEXT NOT NULL,
+    received_at  TEXT NOT NULL
+  );
 `);
+
+// Migration: orders.payment_id (added in Phase 3; CREATE IF NOT EXISTS can't
+// evolve an existing table, so check pragma and ALTER precisely once).
+const orderColumns = db.query("PRAGMA table_info(orders)").all().map((c) => c.name);
+if (!orderColumns.includes("payment_id")) {
+  db.exec("ALTER TABLE orders ADD COLUMN payment_id TEXT");
+  console.log("[db] migrated: orders.payment_id added");
+}
 
 // ── Prepared statements: catalog ───────────────────────────────────────────
 const allProductsStmt = db.query(
@@ -115,7 +130,21 @@ const insertOrderStmt = db.query(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const getOrderStmt = db.query("SELECT * FROM orders WHERE order_id = ?");
+const getLatestOrderByMissionStmt = db.query(
+  "SELECT * FROM orders WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1",
+);
+const getOrderByPaymentStmt = db.query("SELECT * FROM orders WHERE payment_id = ?");
+const setOrderStatusStmt = db.query(
+  "UPDATE orders SET status = ?, payment_id = COALESCE(?, payment_id) WHERE order_id = ?",
+);
 const clearOrdersStmt = db.query("DELETE FROM orders");
+
+// ── Prepared statements: webhook idempotency ───────────────────────────────
+const insertWebhookEventStmt = db.query(
+  "INSERT OR IGNORE INTO webhook_events (event_id, event_type, received_at) VALUES (?, ?, ?)",
+);
+const getWebhookEventStmt = db.query("SELECT event_id FROM webhook_events WHERE event_id = ?");
+const clearWebhookEventsStmt = db.query("DELETE FROM webhook_events");
 
 // ── Prepared statements: wipes (resetDemoData) ─────────────────────────────
 const clearMissionsStmt = db.query("DELETE FROM missions");
@@ -153,6 +182,7 @@ function rowToOrder(row) {
     paymentLinkId: row.payment_link_id,
     paymentLinkUrl: row.payment_link_url,
     status: row.status,
+    paymentId: row.payment_id,
     createdAt: row.created_at,
   };
 }
@@ -194,7 +224,7 @@ export function replaceAllProducts(products) {
 
 // ── Carts ──────────────────────────────────────────────────────────────────
 /**
- * Persist a quoted cart; Phase 2 checkout re-totals it from catalog (M2).
+ * Persist a quoted cart; checkout re-totals it from catalog prices (M2).
  * @param {object[]} lines @param {number} totalPaise @returns {string} cartId
  */
 export function saveCart(lines, totalPaise) {
@@ -259,10 +289,51 @@ export function findOrder(orderId) {
   return row ? rowToOrder(row) : undefined;
 }
 
+/** @param {string} missionId @returns {object|undefined} newest order for that mission */
+export function findLatestOrderByMission(missionId) {
+  const row = getLatestOrderByMissionStmt.get(missionId);
+  return row ? rowToOrder(row) : undefined;
+}
+
+/** @param {string} paymentId @returns {object|undefined} order paid by this payment */
+export function findOrderByPayment(paymentId) {
+  const row = getOrderByPaymentStmt.get(paymentId);
+  return row ? rowToOrder(row) : undefined;
+}
+
+/**
+ * Update order status (and link the payment id when provided).
+ * @param {string} orderId @param {string} status @param {string|null} paymentId
+ * @returns {void}
+ */
+export function setOrderStatus(orderId, status, paymentId = null) {
+  setOrderStatusStmt.run(status, paymentId, orderId);
+}
+
+// ── Webhook idempotency ────────────────────────────────────────────────────
+/**
+ * Has this event id been processed already? (Unique PK = the idempotency key.)
+ * @param {string} eventId @returns {boolean}
+ */
+export function isDuplicateWebhookEvent(eventId) {
+  return getWebhookEventStmt.get(eventId) !== null;
+}
+
+/**
+ * Record a processed event id. Returns false if it already existed (race-safe
+ * via INSERT OR IGNORE + unique PK).
+ * @param {string} eventId @param {string} eventType @returns {boolean} true if newly recorded
+ */
+export function recordWebhookEvent(eventId, eventType) {
+  const res = insertWebhookEventStmt.run(eventId, eventType, new Date().toISOString());
+  return res.changes === 1;
+}
+
 // ── Reset ──────────────────────────────────────────────────────────────────
 /** Wipe ALL demo data (audit included) in one transaction — `bun run seed`. */
 export function resetDemoData() {
   db.transaction(() => {
+    clearWebhookEventsStmt.run();
     clearAuditStmt.run();
     clearOrdersStmt.run();
     clearMissionsStmt.run();
