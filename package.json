@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/server.js",
-    "smoke": "bun scripts/smoke-order.js"
+    "smoke": "bun scripts/smoke-order.js",
+    "seed": "bun scripts/seed.js"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -1,0 +1,27 @@
+/**
+ * Seed script — `bun run seed`. Wipes demo data and reseeds the catalog.
+ * Idempotent: safe to run any number of times. Money prints as integer paise
+ * only (M1); pretty ₹ formatting belongs to the UI (Phase 5's formatINR).
+ */
+import { SEED_PRODUCTS, seedCatalog } from "../src/catalog.js";
+import { resetDemoData } from "../src/db.js";
+
+/** Integer-only paise → "₹59.90" for humans verifying math by hand (no floats). */
+function paiseToRupeeString(paise) {
+  const rupees = Math.floor(paise / 100);
+  const rem = paise % 100;
+  return `₹${rupees}.${String(rem).padStart(2, "0")}`;
+}
+
+resetDemoData();
+seedCatalog();
+
+console.log(`seeded ${SEED_PRODUCTS.length} products into agenttill.db:`);
+for (const p of SEED_PRODUCTS) {
+  console.log(
+    `  ${p.sku.padEnd(14)} ${p.category.padEnd(9)} ${String(p.pricePaise).padStart(7)} paise (${paiseToRupeeString(p.pricePaise)}) · stock ${p.stock}`,
+  );
+}
+const categories = [...new Set(SEED_PRODUCTS.map((p) => p.category))];
+console.log(`categories: ${categories.join(", ")}`);
+console.log("SEED OK");

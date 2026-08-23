@@ -1,5 +1,5 @@
 /**
- * Express app — Phase 0 skeleton (health route only; Phases.md forbids more).
+ * Express app — Phase 1: health + catalog/quote routes.
  *
  * ORDERING LAW (Architecture §8): when the webhook route arrives in Phase 3 it
  * MUST be registered BEFORE express.json() so the raw body bytes survive for
@@ -8,12 +8,15 @@
 import express from "express";
 import { config } from "./config.js";
 import { ping } from "./db.js";
+import { api } from "./routes.js";
 
 const app = express();
 
 // [Phase 3] app.post("/webhooks/razorpay", express.raw({ type: "application/json" }), …)
 //           goes HERE — above express.json(), never below it.
 app.use(express.json());
+
+app.use("/", api); // /catalog, /quote — thin routers (routes.js)
 
 app.get("/health", (_req, res) => {
   const row = ping();
