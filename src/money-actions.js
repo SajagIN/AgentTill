@@ -104,7 +104,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
     actorId: actor.id,
     actorType: actor.type,
     action: "create_order",
-    amountPaise: reTotal,
+    amountPaise: authorizedTotal,
     ctx: {
       now: new Date().toISOString(),
       cart: cart.items,
@@ -120,7 +120,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       correlationId: mission.missionId,
       actor,
       action: "create_order",
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       decision: { ...decision, rulesVersion: RULES_VERSION },
       entities: { cartId },
       outcome: "denied",
@@ -132,7 +132,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
     const { approvalId: newApprovalId } = createApproval({
       missionId: mission.missionId,
       cartId,
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       reason: decision.reason,
       ruleEvals: decision.ruleEvals,
     });
@@ -141,7 +141,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       correlationId: mission.missionId,
       actor,
       action: "create_order",
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       decision: { ...decision, rulesVersion: RULES_VERSION },
       entities: { cartId, approvalId: newApprovalId },
       outcome: "awaiting_approval",
@@ -159,12 +159,12 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
   try {
     const notes = { correlationId: mission.missionId, missionId: mission.missionId };
     const order = await razorpay.createOrder({
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       receipt: cartId,
       notes,
     });
     const link = await razorpay.createPaymentLink({
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       referenceId: order.id,
       notes,
     });
@@ -173,7 +173,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       orderId: order.id,
       missionId: mission.missionId,
       cartId,
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       paymentLinkId: link.id,
       paymentLinkUrl: link.short_url,
       status: "created",
@@ -184,7 +184,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       correlationId: mission.missionId,
       actor,
       action: "create_order",
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       decision: { ...decision, rulesVersion: RULES_VERSION },
       entities: { cartId, orderId: order.id, paymentLinkId: link.id },
       outcome: "succeeded",
@@ -195,7 +195,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       orderId: order.id,
       paymentLinkId: link.id,
       paymentLinkUrl: link.short_url,
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       auditEventId,
     };
   } catch (err) {
@@ -204,7 +204,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       correlationId: mission.missionId,
       actor,
       action: "create_order",
-      amountPaise: reTotal,
+      amountPaise: authorizedTotal,
       decision: { ...decision, rulesVersion: RULES_VERSION },
       entities: { cartId },
       outcome: "failed",

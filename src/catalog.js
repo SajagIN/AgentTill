@@ -55,6 +55,6 @@ export function quoteItems(items) {
   return { ok: true, lines, totalPaise };
 }
 
-export function persistQuote(lines, totalPaise) {
-  return saveCart(lines, totalPaise);
+export function persistQuote(lines, totalPaise, negotiatedTotalPaise = null) {
+  return saveCart(lines, totalPaise, negotiatedTotalPaise);
 }

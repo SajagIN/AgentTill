@@ -19,7 +19,8 @@ db.exec(`
     id          TEXT PRIMARY KEY,
     items_json  TEXT NOT NULL,
     total_paise INTEGER NOT NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    negotiated_total_paise INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_carts_created ON carts (created_at);
 
@@ -101,10 +102,10 @@ const insertProductStmt = db.query(
 const clearProductsStmt = db.query("DELETE FROM products");
 
 const insertCartStmt = db.query(
-  "INSERT INTO carts (id, items_json, total_paise, created_at) VALUES (?, ?, ?, ?)",
+  "INSERT INTO carts (id, items_json, total_paise, created_at, negotiated_total_paise) VALUES (?, ?, ?, ?, ?)",
 );
 const getCartStmt = db.query(
-  "SELECT id, items_json, total_paise, created_at FROM carts WHERE id = ?",
+  "SELECT id, items_json, total_paise, created_at, negotiated_total_paise FROM carts WHERE id = ?",
 );
 const clearCartsStmt = db.query("DELETE FROM carts");
 
@@ -218,9 +219,9 @@ export function replaceAllProducts(products) {
   tx(products);
 }
 
-export function saveCart(lines, totalPaise) {
+export function saveCart(lines, totalPaise, negotiatedTotalPaise = null) {
   const id = `cart_${randomUUID().slice(0, 8)}`;
-  insertCartStmt.run(id, JSON.stringify(lines), totalPaise, new Date().toISOString());
+  insertCartStmt.run(id, JSON.stringify(lines), totalPaise, new Date().toISOString(), negotiatedTotalPaise);
   return id;
 }
 
@@ -231,6 +232,7 @@ export function findCart(cartId) {
     cartId: row.id,
     items: JSON.parse(row.items_json),
     totalPaise: row.total_paise,
+    negotiatedTotalPaise: row.negotiated_total_paise,
     createdAt: row.created_at,
   };
 }

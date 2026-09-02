@@ -6,6 +6,7 @@ import { createMission, listAllMissions, getMission } from "./missions.js";
 import { listApprovals, resolveApproval } from "./approvals.js";
 import { getMissionTimeline } from "./audit.js";
 
+import { processRfq, getSession } from "./negotiation.js";
 export const api = express.Router();
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -177,3 +178,84 @@ api.post("/approvals/:id/deny", wrap(async (req, res) => {
   const approval = resolveApproval({ approvalId: req.params.id, decision: "denied" });
   res.json({ approval });
 }));
+
+
+const RfqBody = z.object({
+  items: z.array(z.object({
+    sku: z.string(),
+    qty: z.number().int().min(1),
+    target_unit_price_paise: z.number().int().min(1)
+  })).min(1),
+  session_id: z.string().optional(),
+  merchant_id: z.string().optional()
+});
+
+api.post("/negotiate/rfq", (req, res) => {
+  const parsed = RfqBody.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "VALIDATION_ERROR", issues: parsed.error.issues });
+  }
+  try {
+    const result = processRfq(parsed.data);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: "BAD_REQUEST", message: err.message });
+  }
+});
+
+api.post("/negotiate/accept", wrap(async (req, res) => {
+  const { session_id, option_id, missionId } = req.body;
+  if (!session_id || !option_id) {
+    return res.status(400).json({ error: "VALIDATION_ERROR", message: "session_id and option_id required" });
+  }
+  const session = getSession(session_id);
+  if (!session) {
+    return res.status(404).json({ error: "NOT_FOUND", message: "session not found" });
+  }
+  const option = session.counter_offers[option_id];
+  if (!option) {
+    return res.status(400).json({ error: "BAD_REQUEST", message: "invalid option_id" });
+  }
+
+  // Build a cart out of the negotiated option
+  const cartLines = [];
+  
+  // Primary
+  cartLines.push({
+    sku: session.primary_item.sku,
+    name: session.primary_item.name || session.primary_item.sku, 
+    qty: session.primary_item.qty,
+    unitPaise: option.unit_price_paise,
+    linePaise: option.unit_price_paise * session.primary_item.qty
+  });
+
+  // Companions
+  if (option.bundled_items) {
+    for (const b of option.bundled_items) {
+      cartLines.push({
+        sku: b.addon_sku,
+        name: b.addon_name,
+        qty: b.addon_qty,
+        unitPaise: b.discounted_price_paise,
+        linePaise: b.discounted_price_paise * b.addon_qty
+      });
+    }
+  }
+
+  const cartId = persistQuote(cartLines, option.total_amount_paise);
+
+  // Directly create order
+  const result = await createOrder({
+    cartId: cartId,
+    missionId: missionId,
+    actor: { type: "agent", id: "negotiator" },
+  });
+
+  res.json({
+    settled: true,
+    option_id,
+    cartId,
+    checkout: result
+  });
+}));
+
