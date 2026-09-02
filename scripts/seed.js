@@ -1,12 +1,6 @@
-/**
- * Seed script — `bun run seed`. Wipes demo data and reseeds the catalog.
- * Idempotent: safe to run any number of times. Money prints as integer paise
- * only (M1); pretty ₹ formatting belongs to the UI (Phase 5's formatINR).
- */
 import { SEED_PRODUCTS, seedCatalog } from "../src/catalog.js";
 import { resetDemoData } from "../src/db.js";
 
-/** Integer-only paise → "₹59.90" for humans verifying math by hand (no floats). */
 function paiseToRupeeString(paise) {
   const rupees = Math.floor(paise / 100);
   const rem = paise % 100;

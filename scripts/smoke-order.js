@@ -1,11 +1,3 @@
-/**
- * Smoke script — quote → money-actions.createOrder → print order + link + timeline.
- *
- * Phase 2 rewrite: the direct Razorpay SDK import is GONE. This now exercises
- * the real money path (authorize → execute → audit), so the M3 grep test
- * ("razorpay-client" imported only by money-actions.js) stays green.
- * Uses a fresh ad-hoc mission; safe to run repeatedly (test mode).
- */
 import { quoteItems, persistQuote } from "../src/catalog.js";
 import { createOrder } from "../src/money-actions.js";
 import { getMissionTimeline } from "../src/audit.js";
@@ -38,8 +30,6 @@ try {
   if (checks.some(([, ok]) => !ok) || timeline.length < 1) process.exit(1);
   console.log("SMOKE OK");
 } catch (err) {
-  // Wrapped, greppable, no secrets (R3/R4). 401/502 here usually means
-  // placeholder keys in .env — paste real test keys from the dashboard.
   console.error("smoke-order failed:", err?.message ?? err);
   process.exit(1);
 }

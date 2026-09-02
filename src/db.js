@@ -1,13 +1,3 @@
-/**
- * SQLite via Bun's built-in driver (`bun:sqlite`) — no native deps (R1).
- * Single file `agenttill.db`, WAL mode. All SQL lives HERE (or in audit.js)
- * as prepared statements — never concatenated with user input (R5).
- *
- * Schema history (append-only — later phases ADD tables, never mutate old ones):
- *   Phase 1 — products, carts
- *   Phase 2 — missions, orders, audit_events
- *   Phase 3 — webhook_events (idempotency), orders.payment_id (light migration)
- */
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
@@ -75,17 +65,30 @@ db.exec(`
     event_type   TEXT NOT NULL,
     received_at  TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS approvals (
+    id           TEXT PRIMARY KEY,
+    mission_id   TEXT NOT NULL,
+    cart_id      TEXT NOT NULL,
+    amount_paise INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    rule_evals   TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    decided_by   TEXT,
+    decided_at   TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals (status);
 `);
 
-// Migration: orders.payment_id (added in Phase 3; CREATE IF NOT EXISTS can't
-// evolve an existing table, so check pragma and ALTER precisely once).
+// ALTER TABLE can't evolve an existing table via CREATE IF NOT EXISTS,
+// so check pragma exactly once per process startup.
 const orderColumns = db.query("PRAGMA table_info(orders)").all().map((c) => c.name);
 if (!orderColumns.includes("payment_id")) {
   db.exec("ALTER TABLE orders ADD COLUMN payment_id TEXT");
   console.log("[db] migrated: orders.payment_id added");
 }
 
-// ── Prepared statements: catalog ───────────────────────────────────────────
 const allProductsStmt = db.query(
   "SELECT sku, name, category, price_paise, stock FROM products ORDER BY category, sku",
 );
@@ -97,7 +100,6 @@ const insertProductStmt = db.query(
 );
 const clearProductsStmt = db.query("DELETE FROM products");
 
-// ── Prepared statements: carts ─────────────────────────────────────────────
 const insertCartStmt = db.query(
   "INSERT INTO carts (id, items_json, total_paise, created_at) VALUES (?, ?, ?, ?)",
 );
@@ -106,7 +108,6 @@ const getCartStmt = db.query(
 );
 const clearCartsStmt = db.query("DELETE FROM carts");
 
-// ── Prepared statements: missions ──────────────────────────────────────────
 const insertMissionStmt = db.query(
   "INSERT INTO missions (id, intent, budget_paise, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
 );
@@ -123,9 +124,8 @@ const listMissionsStmt = db.query(`
   ORDER BY m.created_at DESC
 `);
 
-// ── Prepared statements: orders ────────────────────────────────────────────
 const insertOrderStmt = db.query(`
-  INSERT INTO orders (order_id, mission_id, cart_id, amount_paise, payment_link_id,
+  INSERT OR REPLACE INTO orders (order_id, mission_id, cart_id, amount_paise, payment_link_id,
                       payment_link_url, status, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
@@ -139,18 +139,26 @@ const setOrderStatusStmt = db.query(
 );
 const clearOrdersStmt = db.query("DELETE FROM orders");
 
-// ── Prepared statements: webhook idempotency ───────────────────────────────
+const insertApprovalStmt = db.query(`
+  INSERT INTO approvals (id, mission_id, cart_id, amount_paise, reason, rule_evals, status, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+`);
+const getApprovalStmt = db.query("SELECT * FROM approvals WHERE id = ?");
+const listApprovalsStmt = db.query("SELECT * FROM approvals ORDER BY created_at DESC");
+const setApprovalDecisionStmt = db.query(
+  "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+);
+const clearApprovalsStmt = db.query("DELETE FROM approvals");
+
 const insertWebhookEventStmt = db.query(
   "INSERT OR IGNORE INTO webhook_events (event_id, event_type, received_at) VALUES (?, ?, ?)",
 );
 const getWebhookEventStmt = db.query("SELECT event_id FROM webhook_events WHERE event_id = ?");
 const clearWebhookEventsStmt = db.query("DELETE FROM webhook_events");
 
-// ── Prepared statements: wipes (resetDemoData) ─────────────────────────────
 const clearMissionsStmt = db.query("DELETE FROM missions");
 const clearAuditStmt = db.query("DELETE FROM audit_events");
 
-// ── Helpers ────────────────────────────────────────────────────────────────
 function rowToProduct(row) {
   return {
     sku: row.sku,
@@ -187,31 +195,19 @@ function rowToOrder(row) {
   };
 }
 
-/**
- * Health probe used by GET /health — proves the DB file is open and queryable.
- * @returns {{ ok: number }} row from `SELECT 1`
- */
 export function ping() {
   return db.query("SELECT 1 AS ok").get();
 }
 
-// ── Catalog ────────────────────────────────────────────────────────────────
-/** @returns {Array<{sku:string,name:string,category:string,pricePaise:number,stock:number}>} */
 export function listProducts() {
   return allProductsStmt.all().map(rowToProduct);
 }
 
-/** @param {string} sku @returns {{sku:string,name:string,category:string,pricePaise:number,stock:number}|undefined} */
 export function findProduct(sku) {
   const row = getProductStmt.get(sku);
   return row ? rowToProduct(row) : undefined;
 }
 
-/**
- * Replace the whole catalog in one transaction (used by `bun run seed`).
- * @param {Array<{sku:string,name:string,category:string,pricePaise:number,stock:number}>} products
- * @returns {void}
- */
 export function replaceAllProducts(products) {
   const tx = db.transaction((rows) => {
     clearProductsStmt.run();
@@ -222,18 +218,12 @@ export function replaceAllProducts(products) {
   tx(products);
 }
 
-// ── Carts ──────────────────────────────────────────────────────────────────
-/**
- * Persist a quoted cart; checkout re-totals it from catalog prices (M2).
- * @param {object[]} lines @param {number} totalPaise @returns {string} cartId
- */
 export function saveCart(lines, totalPaise) {
   const id = `cart_${randomUUID().slice(0, 8)}`;
   insertCartStmt.run(id, JSON.stringify(lines), totalPaise, new Date().toISOString());
   return id;
 }
 
-/** @param {string} cartId @returns {{cartId:string, items:object[], totalPaise:number, createdAt:string}|undefined} */
 export function findCart(cartId) {
   const row = getCartStmt.get(cartId);
   if (!row) return undefined;
@@ -245,8 +235,6 @@ export function findCart(cartId) {
   };
 }
 
-// ── Missions ───────────────────────────────────────────────────────────────
-/** @param {string} intent @param {number|null} budgetPaise @param {string} state @returns {string} missionId */
 export function insertMission(intent, budgetPaise, state) {
   const id = `mission_${randomUUID().slice(0, 8)}`;
   const now = new Date().toISOString();
@@ -254,28 +242,19 @@ export function insertMission(intent, budgetPaise, state) {
   return id;
 }
 
-/** @param {string} missionId @returns {object|undefined} mission (camelCase) */
 export function getMissionRow(missionId) {
   const row = getMissionStmt.get(missionId);
   return row ? rowToMission(row) : undefined;
 }
 
-/** @param {string} missionId @param {string} state @returns {void} */
 export function setMissionState(missionId, state) {
   updateMissionStateStmt.run(state, new Date().toISOString(), missionId);
 }
 
-/** @returns {Array<object>} missions newest-first, with audit eventCount */
 export function listMissions() {
   return listMissionsStmt.all().map(rowToMission);
 }
 
-// ── Orders ─────────────────────────────────────────────────────────────────
-/**
- * Persist the Razorpay order + payment link created by money-actions.
- * @param {object} o {orderId, missionId, cartId, amountPaise, paymentLinkId, paymentLinkUrl, status}
- * @returns {void}
- */
 export function saveOrder(o) {
   insertOrderStmt.run(
     o.orderId, o.missionId, o.cartId, o.amountPaise, o.paymentLinkId,
@@ -283,56 +262,72 @@ export function saveOrder(o) {
   );
 }
 
-/** @param {string} orderId @returns {object|undefined} order (camelCase) */
 export function findOrder(orderId) {
   const row = getOrderStmt.get(orderId);
   return row ? rowToOrder(row) : undefined;
 }
 
-/** @param {string} missionId @returns {object|undefined} newest order for that mission */
 export function findLatestOrderByMission(missionId) {
   const row = getLatestOrderByMissionStmt.get(missionId);
   return row ? rowToOrder(row) : undefined;
 }
 
-/** @param {string} paymentId @returns {object|undefined} order paid by this payment */
 export function findOrderByPayment(paymentId) {
   const row = getOrderByPaymentStmt.get(paymentId);
   return row ? rowToOrder(row) : undefined;
 }
 
-/**
- * Update order status (and link the payment id when provided).
- * @param {string} orderId @param {string} status @param {string|null} paymentId
- * @returns {void}
- */
 export function setOrderStatus(orderId, status, paymentId = null) {
   setOrderStatusStmt.run(status, paymentId, orderId);
 }
 
-// ── Webhook idempotency ────────────────────────────────────────────────────
-/**
- * Has this event id been processed already? (Unique PK = the idempotency key.)
- * @param {string} eventId @returns {boolean}
- */
 export function isDuplicateWebhookEvent(eventId) {
   return getWebhookEventStmt.get(eventId) !== null;
 }
 
-/**
- * Record a processed event id. Returns false if it already existed (race-safe
- * via INSERT OR IGNORE + unique PK).
- * @param {string} eventId @param {string} eventType @returns {boolean} true if newly recorded
- */
 export function recordWebhookEvent(eventId, eventType) {
   const res = insertWebhookEventStmt.run(eventId, eventType, new Date().toISOString());
   return res.changes === 1;
 }
 
-// ── Reset ──────────────────────────────────────────────────────────────────
-/** Wipe ALL demo data (audit included) in one transaction — `bun run seed`. */
+function rowToApproval(row) {
+  return {
+    approvalId: row.id,
+    missionId: row.mission_id,
+    cartId: row.cart_id,
+    amountPaise: row.amount_paise,
+    reason: row.reason,
+    ruleEvals: JSON.parse(row.rule_evals),
+    status: row.status,
+    decidedBy: row.decided_by,
+    decidedAt: row.decided_at,
+    createdAt: row.created_at,
+  };
+}
+
+export function insertApproval(a) {
+  const id = `appr_${randomUUID().slice(0, 8)}`;
+  insertApprovalStmt.run(id, a.missionId, a.cartId, a.amountPaise, a.reason, JSON.stringify(a.ruleEvals), new Date().toISOString());
+  return id;
+}
+
+export function getApprovalRow(approvalId) {
+  const row = getApprovalStmt.get(approvalId);
+  return row ? rowToApproval(row) : undefined;
+}
+
+export function listApprovalRows() {
+  return listApprovalsStmt.all().map(rowToApproval);
+}
+
+export function setApprovalDecision(approvalId, decision, decidedBy) {
+  setApprovalDecisionStmt.run(decision, decidedBy, new Date().toISOString(), approvalId);
+}
+
+// Wipe ALL demo data in one transaction — run via `bun run seed`.
 export function resetDemoData() {
   db.transaction(() => {
+    clearApprovalsStmt.run();
     clearWebhookEventsStmt.run();
     clearAuditStmt.run();
     clearOrdersStmt.run();

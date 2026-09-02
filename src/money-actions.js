@@ -1,24 +1,13 @@
-/**
- * THE FOUR MONEY ACTIONS — the only code that creates orders/payments/refunds.
- * Every function follows the same law (M3): authorize() → execute → audit().
- * If authorize() says deny, the SDK is never called (test-proven in Phase 4).
- *
- * This is the only module allowed to import razorpay-client.js (grep test).
- * Never imports Express; transport-agnostic so scripts and webhooks share it.
- *
- * Fail-closed (R4): on SDK failure mid-flow we append a "failed" audit event,
- * leave mission state untouched, and rethrow — never retry silently.
- */
 import * as razorpay from "./razorpay-client.js";
 import { authorize } from "./policy-engine.js";
 import { RULES_VERSION } from "./policy-rules.js";
-import { appendEvent } from "./audit.js";
+import { appendEvent, getCheckoutWindowStats } from "./audit.js";
 import { findCart, findProduct, saveOrder, findOrder, findOrderByPayment, setOrderStatus, findLatestOrderByMission } from "./db.js";
 import { createMission, getMission, transition, TransitionError } from "./missions.js";
+import { createApproval, getApproval } from "./approvals.js";
 
 const SYSTEM_ACTOR = { type: "system", id: "razorpay-webhook" };
 
-/** Money-action-level failure with HTTP mapping (status/code duck-typed by the express error middleware). */
 class MoneyActionError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -28,7 +17,7 @@ class MoneyActionError extends Error {
   }
 }
 
-/** Re-total cart lines from CURRENT catalog prices (M2: server-side pricing only). */
+// Re-total cart lines from CURRENT catalog prices (M2: server-side pricing only).
 function retotalFromCatalog(lines) {
   let total = 0;
   for (const line of lines) {
@@ -45,17 +34,11 @@ function retotalFromCatalog(lines) {
   return total;
 }
 
-/**
- * Create an order + payment link for a cart, fully policy-checked.
- * Flow: load cart → resolve mission → M2 re-total guard → POLICY_CHECK state
- *       → authorize() → rzp order → rzp payment link → persist → PAYING → audit.
- *
- * @param {{missionId?:string, cartId:string, actor:{type:string,id:string}}} input
- * @returns {Promise<{status:"created", missionId:string, orderId:string, paymentLinkId:string,
- *   paymentLinkUrl:string, amountPaise:number, auditEventId:string}
- *  |{status:"denied", reason:string, ruleEvals:object[], auditEventId:string}>}
- */
-export async function createOrder({ missionId, cartId, actor }) {
+// Flow: load cart → resolve mission → M2 re-total guard → POLICY_CHECK state
+//       → authorize() → [denied → stop | needs_approval → pause | allow →
+//       rzp order → rzp payment link → persist → PAYING → audit].
+// approvalId set = resume after human approval (re-checks every rule except the gate).
+export async function createOrder({ missionId, cartId, actor, approvalId }) {
   const cart = findCart(cartId);
   if (!cart) {
     throw new MoneyActionError(404, "CART_NOT_FOUND", `no cart with id ${cartId}`);
@@ -66,15 +49,36 @@ export async function createOrder({ missionId, cartId, actor }) {
     throw new MoneyActionError(404, "MISSION_NOT_FOUND", `no mission with id ${missionId}`);
   }
   if (!mission) {
-    // Manual/ad-hoc checkout (Phase 2 acceptance): an implicit mission keeps
-    // the audit trail uniform. POST /missions arrives with the agent in Phase 6.
+    // Manual/ad-hoc checkout: implicit mission keeps the audit trail uniform.
     mission = createMission({ intent: "manual checkout", budgetPaise: null });
   }
   if (mission.state === "PLANNING") {
-    transition(mission.missionId, "QUOTED"); // the cart IS the quote
+    mission = transition(mission.missionId, "QUOTED");
   }
 
-  // M2 hard stop: quote stored at /quote time vs prices re-derived NOW.
+  let approvalResolved = false;
+  if (approvalId) {
+    const approval = getApproval(approvalId);
+    if (!approval) {
+      throw new MoneyActionError(404, "APPROVAL_NOT_FOUND", `no approval with id ${approvalId}`);
+    }
+    if (approval.status !== "approved") {
+      throw new MoneyActionError(
+        409,
+        "APPROVAL_NOT_APPROVED",
+        `approval ${approvalId} is "${approval.status}", not approved`,
+      );
+    }
+    if (approval.missionId !== mission.missionId || approval.cartId !== cartId) {
+      throw new MoneyActionError(
+        409,
+        "APPROVAL_MISMATCH",
+        `approval ${approvalId} belongs to mission ${approval.missionId}/cart ${approval.cartId}, not this checkout`,
+      );
+    }
+    approvalResolved = true;
+  }
+
   const reTotal = retotalFromCatalog(cart.items);
   if (reTotal !== cart.totalPaise) {
     const reason =
@@ -92,18 +96,26 @@ export async function createOrder({ missionId, cartId, actor }) {
     throw new MoneyActionError(422, "AMOUNT_MISMATCH", reason);
   }
 
-  transition(mission.missionId, "POLICY_CHECK");
+  if (mission.state === "QUOTED" || mission.state === "AWAITING_APPROVAL") {
+    mission = transition(mission.missionId, "POLICY_CHECK");
+  }
 
   const decision = authorize({
     actorId: actor.id,
     actorType: actor.type,
     action: "create_order",
     amountPaise: reTotal,
-    ctx: { cart: cart.items, missionBudgetPaise: mission.budgetPaise },
+    ctx: {
+      now: new Date().toISOString(),
+      cart: cart.items,
+      missionBudgetPaise: mission.budgetPaise,
+      window: getCheckoutWindowStats(),
+      approvalResolved,
+    },
   });
 
   if (decision.decision === "deny") {
-    transition(mission.missionId, "REJECTED");
+    mission = transition(mission.missionId, "REJECTED");
     const auditEventId = appendEvent({
       correlationId: mission.missionId,
       actor,
@@ -115,7 +127,34 @@ export async function createOrder({ missionId, cartId, actor }) {
     });
     return { status: "denied", reason: decision.reason, ruleEvals: decision.ruleEvals, auditEventId };
   }
-  // "needs_approval" branch arrives in Phase 4 with approvals.js.
+
+  if (decision.decision === "needs_approval") {
+    const { approvalId: newApprovalId } = createApproval({
+      missionId: mission.missionId,
+      cartId,
+      amountPaise: reTotal,
+      reason: decision.reason,
+      ruleEvals: decision.ruleEvals,
+    });
+    mission = transition(mission.missionId, "AWAITING_APPROVAL");
+    const auditEventId = appendEvent({
+      correlationId: mission.missionId,
+      actor,
+      action: "create_order",
+      amountPaise: reTotal,
+      decision: { ...decision, rulesVersion: RULES_VERSION },
+      entities: { cartId, approvalId: newApprovalId },
+      outcome: "awaiting_approval",
+    });
+    return {
+      status: "needs_approval",
+      missionId: mission.missionId,
+      approvalId: newApprovalId,
+      reason: decision.reason,
+      ruleEvals: decision.ruleEvals,
+      auditEventId,
+    };
+  }
 
   try {
     const notes = { correlationId: mission.missionId, missionId: mission.missionId };
@@ -139,7 +178,7 @@ export async function createOrder({ missionId, cartId, actor }) {
       paymentLinkUrl: link.short_url,
       status: "created",
     });
-    transition(mission.missionId, "PAYING");
+    mission = transition(mission.missionId, "PAYING");
 
     const auditEventId = appendEvent({
       correlationId: mission.missionId,
@@ -160,7 +199,7 @@ export async function createOrder({ missionId, cartId, actor }) {
       auditEventId,
     };
   } catch (err) {
-    // Fail-closed: audit the failure, leave mission in POLICY_CHECK, surface.
+    // Fail-closed: audit the failure, leave mission state untouched, rethrow.
     appendEvent({
       correlationId: mission.missionId,
       actor,
@@ -174,17 +213,11 @@ export async function createOrder({ missionId, cartId, actor }) {
   }
 }
 
-/**
- * Refund a payment (full or partial). amountPaise must be a positive integer
- * not exceeding the payment's amount (code check + policy check).
- * @param {{paymentId:string, amountPaise:number, reason:string, actor:{type:string,id:string}}} input
- * @returns {Promise<object>} result with refund id + auditEventId
- */
 export async function refund({ paymentId, amountPaise, reason, actor }) {
   if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
     throw new MoneyActionError(400, "INVALID_AMOUNT", "amountPaise must be a positive integer");
   }
-  const payment = await razorpay.fetchPayment(paymentId); // 502-wrapped on failure
+  const payment = await razorpay.fetchPayment(paymentId);
   const capturedPaise = typeof payment.amount === "number" ? payment.amount : 0;
   if (amountPaise > capturedPaise) {
     throw new MoneyActionError(
@@ -240,22 +273,10 @@ export async function refund({ paymentId, amountPaise, reason, actor }) {
   }
 }
 
-/**
- * Resolve which of OUR orders a webhook payment belongs to.
- *
- * Ground truth (live payloads, 2026-08-23): payments made via a payment link
- * carry the LINK'S INTERNAL order_id — not the order we created and passed as
- * reference_id. But the notes we set on the payment link ({missionId,
- * correlationId}) propagate onto the payment entity, so:
- *   1) try the payment's order_id directly (non-link flows), then
- *   2) fall back to notes.missionId → newest order for that mission.
- * Notes are safe to trust here: we authored them on the link, HMAC already
- * verified the sender, and confirmPayment still re-verifies the amount
- * against the resolved order via the API.
- *
- * @param {{orderId?:string|null, missionHint?:string|null}} input
- * @returns {object|undefined} resolved order row
- */
+// Payments made via a payment link carry the LINK's internal order_id, not the
+// one we created. But notes we set on the link (missionId/correlationId) propagate
+// onto the payment entity, so: try direct order_id first, then fall back to
+// notes.missionId → newest order for that mission.
 export function resolveOrderForPayment({ orderId, missionHint }) {
   if (orderId) {
     const direct = findOrder(orderId);
@@ -267,17 +288,9 @@ export function resolveOrderForPayment({ orderId, missionHint }) {
   return undefined;
 }
 
-/**
- * confirmPayment — called ONLY by webhooks.js after HMAC verification and the
- * duplicate check. Trusts the Razorpay API, not the webhook payload: re-fetches
- * the payment and re-checks the amount against the order before confirming.
- *
- * Fail-closed: any ambiguity (amount mismatch, odd status) leaves mission state
- * untouched and writes an audit event — never silently "makes it work" (R4).
- *
- * @param {{orderId?:string|null, paymentId:string, missionHint?:string|null, source:string}} input
- * @returns {Promise<{status:string, reason?:string}>}
- */
+// confirmPayment: re-fetches the payment from the API (never trusts the webhook
+// payload body) and re-checks the amount against our order before confirming.
+// Any ambiguity leaves mission state untouched and writes an audit event.
 export async function confirmPayment({ orderId, paymentId, missionHint, source }) {
   const order = resolveOrderForPayment({ orderId, missionHint });
   if (!order) {
@@ -295,7 +308,6 @@ export async function confirmPayment({ orderId, paymentId, missionHint, source }
     return { status: "already_confirmed" };
   }
 
-  // API truth, not webhook trust.
   const payment = await razorpay.fetchPayment(paymentId);
   if (payment.amount !== order.amountPaise) {
     const reason =
@@ -323,8 +335,7 @@ export async function confirmPayment({ orderId, paymentId, missionHint, source }
     missionState = transition(order.missionId, "CONFIRMED").state;
   } catch (err) {
     if (err instanceof TransitionError) {
-      // e.g. already CONFIRMED via a racing delivery; the captured flag above
-      // keeps further deliveries cheap. Audit the out-of-order arrival.
+      // Already CONFIRMED via a racing delivery; audit the out-of-order arrival.
       appendEvent({
         correlationId: order.missionId,
         actor: SYSTEM_ACTOR,
@@ -351,12 +362,6 @@ export async function confirmPayment({ orderId, paymentId, missionHint, source }
   return { status: "confirmed", missionState };
 }
 
-/**
- * noteFailedPayment — payment.failed webhook: order → payment_failed, mission
- * PAYING → FAILED (retry logic itself is Phase 7), audit the failure.
- * @param {{orderId:string, paymentId:string, amountPaise?:number, reason:string}} input
- * @returns {Promise<{status:string, reason?:string}>}
- */
 export async function noteFailedPayment({ orderId, paymentId, missionHint, amountPaise, reason }) {
   const order = resolveOrderForPayment({ orderId, missionHint });
   if (!order) {
@@ -403,13 +408,6 @@ export async function noteFailedPayment({ orderId, paymentId, missionHint, amoun
   return { status: "failed", missionState };
 }
 
-/**
- * noteRefundProcessed — refund.processed webhook: audit-only for now (the
- * refund money-action E2E is Phase 7). Correlates to the mission via the
- * stored payment_id → order mapping.
- * @param {{refundId?:string, paymentId?:string, amountPaise?:number}} input
- * @returns {Promise<{status:string}>}
- */
 export async function noteRefundProcessed({ refundId, paymentId, amountPaise }) {
   const order = paymentId ? findOrderByPayment(paymentId) : undefined;
   appendEvent({
@@ -424,11 +422,189 @@ export async function noteRefundProcessed({ refundId, paymentId, amountPaise }) 
   return { status: "noted" };
 }
 
-/**
- * retryPayment — Phase 7 (attempt ≤ 2, backoff attempt²×5s, velocity re-check).
- * @throws {MoneyActionError} 501 until Phase 7
- */
-export async function retryPayment({ orderId, missionId, attempt }) {
-  void orderId; void missionId; void attempt;
-  throw new MoneyActionError(501, "NOT_IMPLEMENTED", "retryPayment lands in Phase 7 (failure playbook)");
+// Retry: up to 2 attempts, exponential backoff attempt²×5s, full policy re-check.
+export async function retryPayment({ orderId, missionId, attempt, actor }) {
+  const order = findOrder(orderId);
+  if (!order) {
+    throw new MoneyActionError(404, "ORDER_NOT_FOUND", `no order with id ${orderId}`);
+  }
+
+  const mission = getMission(missionId);
+  if (!mission) {
+    throw new MoneyActionError(404, "MISSION_NOT_FOUND", `no mission with id ${missionId}`);
+  }
+
+  if (order.missionId !== missionId) {
+    throw new MoneyActionError(409, "ORDER_MISSION_MISMATCH", `order ${orderId} belongs to mission ${order.missionId}, not ${missionId}`);
+  }
+
+  if (attempt > 2) {
+    throw new MoneyActionError(403, "MAX_RETRIES_EXCEEDED", `retry attempt ${attempt} exceeds maximum of 2`);
+  }
+
+  if (mission.state !== "FAILED") {
+    throw new MoneyActionError(409, "INVALID_MISSION_STATE", `mission ${missionId} is in ${mission.state} state, not FAILED`);
+  }
+
+  const cart = findCart(order.cartId);
+  if (!cart) {
+    throw new MoneyActionError(404, "CART_NOT_FOUND", `no cart with id ${order.cartId}`);
+  }
+
+  const backoffSeconds = (attempt ** 2) * 5;
+  await new Promise(resolve => setTimeout(resolve, backoffSeconds * 1000));
+
+  let updatedMission;
+  try {
+    updatedMission = transition(missionId, "RETRYING");
+  } catch (err) {
+    throw new MoneyActionError(409, "TRANSITION_FAILED", `cannot transition mission to RETRYING: ${err.message}`);
+  }
+
+  const decision = authorize({
+    actorId: actor.id,
+    actorType: actor.type,
+    action: "create_order",
+    amountPaise: order.amountPaise,
+    ctx: {
+      now: new Date().toISOString(),
+      cart: cart.items,
+      missionBudgetPaise: mission.budgetPaise,
+      window: getCheckoutWindowStats(),
+      approvalResolved: false,
+      isRetry: true,
+      attempt,
+    },
+  });
+
+  const retryAuditEventId = appendEvent({
+    correlationId: missionId,
+    actor,
+    action: "retry_payment",
+    amountPaise: order.amountPaise,
+    decision: { ...decision, rulesVersion: RULES_VERSION },
+    entities: { orderId, cartId: order.cartId, attempt },
+    outcome: decision.decision === "allow" ? "succeeded" : "denied",
+  });
+
+  if (decision.decision === "deny") {
+    try {
+      transition(missionId, "REJECTED");
+    } catch (err) {
+      console.warn(`[money] Could not transition mission ${missionId} to REJECTED: ${err.message}`);
+    }
+    throw new MoneyActionError(403, "POLICY_DENIED", `retry denied by policy: ${decision.reason}`);
+  }
+
+  if (decision.decision === "needs_approval") {
+    const { approvalId: newApprovalId } = createApproval({
+      missionId: missionId,
+      cartId: order.cartId,
+      amountPaise: order.amountPaise,
+      reason: decision.reason,
+      ruleEvals: decision.ruleEvals,
+    });
+    try {
+      transition(missionId, "AWAITING_APPROVAL");
+    } catch (err) {
+      console.warn(`[money] Could not transition mission ${missionId} to AWAITING_APPROVAL: ${err.message}`);
+    }
+    const auditEventId = appendEvent({
+      correlationId: missionId,
+      actor,
+      action: "retry_payment",
+      amountPaise: order.amountPaise,
+      decision: { ...decision, rulesVersion: RULES_VERSION },
+      entities: { orderId, cartId: order.cartId, attempt, approvalId: newApprovalId },
+      outcome: "awaiting_approval",
+    });
+    return {
+      status: "needs_approval",
+      missionId,
+      approvalId: newApprovalId,
+      reason: decision.reason,
+      ruleEvals: decision.ruleEvals,
+      auditEventId,
+    };
+  }
+
+  try {
+    const notes = {
+      correlationId: missionId,
+      missionId,
+      parentOrderId: orderId,
+      retryAttempt: attempt,
+    };
+
+    const newOrder = await razorpay.createOrder({
+      amountPaise: order.amountPaise,
+      receipt: `${order.cartId}_retry${attempt}`,
+      notes,
+    });
+
+    const link = await razorpay.createPaymentLink({
+      amountPaise: order.amountPaise,
+      referenceId: newOrder.id,
+      notes,
+    });
+
+    saveOrder({
+      orderId: newOrder.id,
+      missionId: missionId,
+      cartId: order.cartId,
+      amountPaise: order.amountPaise,
+      paymentLinkId: link.id,
+      paymentLinkUrl: link.short_url,
+      status: "created",
+    });
+
+    try {
+      transition(missionId, "PAYING");
+    } catch (err) {
+      console.warn(`[money] Could not transition mission ${missionId} to PAYING: ${err.message}`);
+    }
+
+    const auditEventId = appendEvent({
+      correlationId: missionId,
+      parentEventId: retryAuditEventId,
+      actor,
+      action: "retry_payment",
+      amountPaise: order.amountPaise,
+      decision: { ...decision, rulesVersion: RULES_VERSION },
+      entities: {
+        orderId: newOrder.id,
+        cartId: order.cartId,
+        paymentLinkId: link.id,
+        parentOrderId: orderId,
+        attempt,
+      },
+      outcome: "succeeded",
+    });
+
+    return {
+      status: "created",
+      orderId: newOrder.id,
+      paymentLinkUrl: link.short_url,
+      attempt,
+      auditEventId,
+    };
+  } catch (err) {
+    // Fail-closed: audit failure, transition mission back to FAILED.
+    appendEvent({
+      correlationId: missionId,
+      parentEventId: retryAuditEventId,
+      actor,
+      action: "retry_payment",
+      amountPaise: order.amountPaise,
+      decision: { ...decision, rulesVersion: RULES_VERSION },
+      entities: { orderId, cartId: order.cartId, attempt },
+      outcome: "failed",
+    });
+    try {
+      transition(missionId, "FAILED");
+    } catch (err2) {
+      console.warn(`[money] Could not transition mission ${missionId} to FAILED: ${err2.message}`);
+    }
+    throw err;
+  }
 }

@@ -1,14 +1,5 @@
-/**
- * Catalog: seed data + server-side pricing. This module is the ONLY source of
- * truth for prices (M2) — agent/client input never sets an amount. All math
- * is integer paise (M1): qty (int) × pricePaise (int).
- *
- * 14 products across 4 categories. CAT-LUNCH-BOX sits in `catering` on
- * purpose: the category_allowlist rule denies it in the Phase 4+ demos.
- */
 import { listProducts, findProduct, replaceAllProducts, saveCart } from "./db.js";
 
-/** Seed catalog (prices in integer paise; stock is demo-plausible). */
 export const SEED_PRODUCTS = [
   // office
   { sku: "OFF-FILE-A4", name: "Lever Arch File A4", category: "office", pricePaise: 34900, stock: 25 },
@@ -26,28 +17,19 @@ export const SEED_PRODUCTS = [
   { sku: "SUP-CUP-PAP", name: "Paper Cups (pack of 50)", category: "supplies", pricePaise: 3500, stock: 100 },
   { sku: "SUP-TEA-250", name: "Green Tea 250g", category: "supplies", pricePaise: 29900, stock: 30 },
   { sku: "SUP-TOWL-ROL", name: "Kitchen Towel Rolls (6)", category: "supplies", pricePaise: 21000, stock: 45 },
-  // catering — deliberate deny-demo ammo for the category allowlist rule
+  // catering — denied by the category_allowlist rule in the policy engine
   { sku: "CAT-LUNC-BOX", name: "Team Lunch Box (per person)", category: "catering", pricePaise: 25000, stock: 60 },
 ];
 
-/** @returns {Array<{sku,name,category,pricePaise,stock}>} the live catalog */
 export function getCatalog() {
   return listProducts();
 }
 
-/** Seed helper for scripts/seed.js. @returns {void} */
 export function seedCatalog() {
   replaceAllProducts(SEED_PRODUCTS);
 }
 
-/**
- * Resolve a quote request against the catalog and price it server-side.
- * All-or-nothing: if ANY sku is unknown, nothing is priced (caller returns 400).
- *
- * @param {{sku:string, qty:number}[]} items qty is a positive int (zod-checked at the route)
- * @returns {{ok:true, lines:Array<object>, totalPaise:number}
- *          |{ok:false, unknownSkus:string[], validSkus:string[]}}
- */
+// All-or-nothing quote: if any SKU is unknown, nothing is priced.
 export function quoteItems(items) {
   const unknownSkus = [];
   const lines = [];
@@ -63,7 +45,7 @@ export function quoteItems(items) {
       category: product.category,
       qty: item.qty,
       unitPaise: product.pricePaise,
-      linePaise: item.qty * product.pricePaise, // int × int — never a float (M1)
+      linePaise: item.qty * product.pricePaise, // integer × integer — no floats (M1)
     });
   }
   if (unknownSkus.length > 0) {
@@ -73,12 +55,6 @@ export function quoteItems(items) {
   return { ok: true, lines, totalPaise };
 }
 
-/**
- * Persist a successful quote as a cart and return its id.
- * @param {object[]} lines from quoteItems()
- * @param {number} totalPaise from quoteItems()
- * @returns {string} cartId
- */
 export function persistQuote(lines, totalPaise) {
   return saveCart(lines, totalPaise);
 }

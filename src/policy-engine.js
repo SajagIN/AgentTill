@@ -1,29 +1,30 @@
-/**
- * Policy engine — the deterministic heart of AgentTill.
- *
- * PURE: imports nothing app-side, reads no clock, touches no DB, calls no LLM.
- * Everything it needs arrives via `ctx` (Architecture §5). This purity is what
- * makes the trust layer provable — Phase 4's unit tests lean on it.
- *
- * PHASE 2 STUB: allows everything with reason "phase2-stub" and empty
- * ruleEvals. Real evaluation of the 5 rules in policy-rules.js lands in
- * Phase 4; the signature and return contract below are FINAL.
- */
+import { POLICY_RULES, RULES_VERSION } from "./policy-rules.js";
 
-/**
- * Decide whether a money action may proceed.
- * @param {{actorId:string, actorType:string, action:string, amountPaise:number,
- *   ctx:{now:string, cart?:Array<{sku:string,qty:number,category:string,unitPaise:number}>,
- *        missionBudgetPaise?:number|null,
- *        window?:{spentLastHourPaise:number, checkoutsLastHour:number}}}} input
- * @returns {{decision:"allow"|"deny"|"needs_approval", reason:string, ruleEvals:Array<object>}}
- */
+// Precedence: any fail → deny; else any triggered gate → needs_approval; else allow.
+// Boundaries: exact-equal to a limit passes (> is the deny operator).
 export function authorize({ actorId, actorType, action, amountPaise, ctx }) {
-  // Stub: parameters are intentionally unused until Phase 4 wires the rules.
-  void actorId; void actorType; void action; void amountPaise; void ctx;
-  return {
-    decision: "allow",
-    reason: "phase2-stub",
-    ruleEvals: [],
-  };
+  if (!Number.isInteger(amountPaise) || amountPaise < 0) {
+    throw new TypeError(`amountPaise must be a non-negative integer (got ${amountPaise}) — M1`);
+  }
+  void actorId;
+  void actorType;
+
+  const ruleEvals = [];
+  for (const r of POLICY_RULES) {
+    const applicable = r.appliesTo.includes(action);
+    const outcome = applicable
+      ? r.evaluate({ action, amountPaise, ctx: ctx ?? {} })
+      : { outcome: "pass", detail: `not applicable to action "${action}"` };
+    ruleEvals.push({ ruleId: r.id, params: r.params, outcome: outcome.outcome, detail: outcome.detail });
+  }
+
+  const failed = ruleEvals.find((e) => e.outcome === "fail");
+  if (failed) return { decision: "deny", reason: failed.detail, ruleEvals };
+
+  const gated = ruleEvals.find((e) => e.outcome === "triggered");
+  if (gated) return { decision: "needs_approval", reason: gated.detail, ruleEvals };
+
+  return { decision: "allow", reason: "all rules passed", ruleEvals };
 }
+
+export { RULES_VERSION };

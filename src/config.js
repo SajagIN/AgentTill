@@ -1,14 +1,6 @@
-/**
- * Environment & configuration — single source of truth for settings.
- *
- * Bun auto-loads .env from the project root; never import a dotenv library (R1).
- * Fails fast at import time, naming WHICH variables are wrong — never their
- * values, so secrets can't leak into logs (R3).
- */
 import { z } from "zod";
 
 const EnvSchema = z.object({
-  // Razorpay — TEST MODE ONLY. Live keys are a project-level ban (PRD non-goal).
   RAZORPAY_KEY_ID: z
     .string({
       required_error:
@@ -16,13 +8,12 @@ const EnvSchema = z.object({
     })
     .regex(
       /^rzp_test_/,
-      "RAZORPAY_KEY_ID must start with 'rzp_test_' — live keys are banned in AgentTill",
+      "RAZORPAY_KEY_ID must start with 'rzp_test_' — live keys are not supported",
     ),
   RAZORPAY_KEY_SECRET: z
     .string({ required_error: "RAZORPAY_KEY_SECRET is missing" })
     .min(1, "RAZORPAY_KEY_SECRET must not be empty"),
 
-  // Not needed until Phase 3 / Phase 6 — validated at point of use until then.
   RAZORPAY_WEBHOOK_SECRET: z.string().default(""),
   OPENAI_API_KEY: z.string().default(""),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
@@ -40,7 +31,6 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-/** Frozen, validated app configuration (camelCase view of the env). */
 export const config = Object.freeze({
   port: parsed.data.PORT,
   baseUrl: parsed.data.BASE_URL,
