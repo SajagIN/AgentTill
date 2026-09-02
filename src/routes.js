@@ -4,7 +4,7 @@ import { getCatalog, quoteItems, persistQuote } from "./catalog.js";
 import { createOrder } from "./money-actions.js";
 import { createMission, listAllMissions, getMission } from "./missions.js";
 import { listApprovals, resolveApproval } from "./approvals.js";
-import { getMissionTimeline } from "./audit.js";
+import { getMissionTimeline, getMissionReceipt } from "./audit.js";
 
 import { processRfq, getSession } from "./negotiation.js";
 export const api = express.Router();
@@ -292,3 +292,15 @@ if (result.status === 'denied') {
     checkout: result
   });}));
 
+
+api.get("/audit/:correlationId/receipt", wrap(async (req, res) => {
+  const parsed = CorrelationIdParam.safeParse(req.params.correlationId);
+  if (!parsed.success) {
+    return res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "invalid correlationId" } });
+  }
+  const receipt = getMissionReceipt(parsed.data);
+  if (!receipt) {
+    return res.status(404).json({ error: { code: "NOT_FOUND", message: `no timeline found` } });
+  }
+  return res.status(200).json(receipt);
+}));

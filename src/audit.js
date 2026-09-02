@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db.js";
+import { generate4LeafMerkleReceipt } from "./merkle-receipt.js";
 
 const insertEventStmt = db.query(`
   INSERT INTO audit_events
@@ -64,4 +65,10 @@ export function getCheckoutWindowStats(now = new Date()) {
     spentLastHourPaise: windowSpentStmt.get(cutoff).spent,
     checkoutsLastHour: windowCountStmt.get(cutoff).attempts,
   };
+}
+
+export function getMissionReceipt(correlationId) {
+  const events = getMissionTimeline(correlationId);
+  if (events.length === 0) return null;
+  return generate4LeafMerkleReceipt(events);
 }
