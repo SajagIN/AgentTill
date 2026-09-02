@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { findProduct } from "./db.js";
+import { findProduct, saveNegotiationSession, getNegotiationSessionRow } from "./db.js";
 
-const negotiationSessions = new Map();
+
 
 // Margin floors and caps
 const MIN_MARGIN_PCT = 15.0;
@@ -135,7 +135,7 @@ export function processRfq(body) {
     });
   }
 
-  negotiationSessions.set(sessionId, {
+  const sessionObj = {
     session_id: sessionId,
     merchant_id: merchantId,
     primary_item: {
@@ -144,7 +144,8 @@ export function processRfq(body) {
       catalog_price: primaryProd.pricePaise,
     },
     counter_offers: Object.fromEntries(counterOffers.map(o => [o.option_id, o]))
-  });
+  };
+  saveNegotiationSession(sessionId, merchantId, sessionObj);
 
   return {
     status: isFloorBreached ? "REJECTED_MARGIN_FLOOR" : "OFFERS_PROPOSED",
@@ -158,5 +159,5 @@ export function processRfq(body) {
 }
 
 export function getSession(sessionId) {
-  return negotiationSessions.get(sessionId);
+  return getNegotiationSessionRow(sessionId);
 }

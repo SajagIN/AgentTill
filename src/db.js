@@ -78,6 +78,14 @@ db.exec(`
     received_at  TEXT NOT NULL
   );
 
+  
+  CREATE TABLE IF NOT EXISTS negotiation_sessions (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    session_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  
   CREATE TABLE IF NOT EXISTS approvals (
     id           TEXT PRIMARY KEY,
     mission_id   TEXT NOT NULL,
@@ -351,4 +359,21 @@ export function resetDemoData() {
     clearCartsStmt.run();
     clearProductsStmt.run();
   })();
+}
+
+const insertNegSessionStmt = db.query(
+  "INSERT INTO negotiation_sessions (id, merchant_id, session_json, created_at) VALUES (?, ?, ?, ?)"
+);
+const getNegSessionStmt = db.query(
+  "SELECT session_json FROM negotiation_sessions WHERE id = ?"
+);
+const clearNegSessionsStmt = db.query("DELETE FROM negotiation_sessions");
+
+export function saveNegotiationSession(sessionId, merchantId, sessionObj) {
+  insertNegSessionStmt.run(sessionId, merchantId, JSON.stringify(sessionObj), new Date().toISOString());
+}
+
+export function getNegotiationSessionRow(sessionId) {
+  const row = getNegSessionStmt.get(sessionId);
+  return row ? JSON.parse(row.session_json) : undefined;
 }
