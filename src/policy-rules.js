@@ -79,10 +79,16 @@ export const POLICY_RULES = [
     { thresholdPaise: APPROVAL_THRESHOLD_PAISE },
     ["create_order", "retry_payment"],
     "Amount strictly above the threshold requires human approval before proceeding.",
-    ({ amountPaise, ctx }) => {
+    ({ actorId, amountPaise, ctx }) => {
       if (ctx?.approvalResolved) {
         return { outcome: "pass", detail: "human approval already granted for this attempt — gate satisfied" };
       }
+      
+      const mandate = getMandate(actorId);
+      if (mandate && amountPaise <= mandate.max_amount_paise) {
+        return { outcome: "pass", detail: `mandate active for ${p(mandate.max_amount_paise)} covering amount ${p(amountPaise)}` };
+      }
+
       return amountPaise > APPROVAL_THRESHOLD_PAISE
         ? { outcome: "triggered", detail: `amount ${p(amountPaise)} is above approval threshold ${p(APPROVAL_THRESHOLD_PAISE)}` }
         : { outcome: "pass", detail: `amount ${p(amountPaise)} at or below approval threshold ${p(APPROVAL_THRESHOLD_PAISE)}` };

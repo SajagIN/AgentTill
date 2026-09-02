@@ -188,7 +188,12 @@ const RfqBody = z.object({
     target_unit_price_paise: z.number().int().min(1)
   })).min(1),
   session_id: z.string().optional(),
-  merchant_id: z.string().optional()
+  merchant_id: z.string().optional(),
+  buyer_id: z.string().optional(),
+  buyer_mandate: z.object({
+    max_amount: z.number().int(),
+    autopay_enabled: z.boolean().optional()
+  }).optional()
 });
 
 api.post("/negotiate/rfq", (req, res) => {
@@ -205,7 +210,7 @@ api.post("/negotiate/rfq", (req, res) => {
 });
 
 api.post("/negotiate/accept", wrap(async (req, res) => {
-  const { session_id, option_id, missionId, buyer_id } = req.body;
+  const { session_id, option_id, missionId, buyer_id, buyer_mandate } = req.body;
   if (!session_id || !option_id) {
     return res.status(400).json({ error: "VALIDATION_ERROR", message: "session_id and option_id required" });
   }
@@ -221,13 +226,19 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
   // Build a cart out of the negotiated option
   const cartLines = [];
   
+  const { getCatalog } = require("./catalog.js");
+  const catalog = getCatalog();
+  const getCategory = sku => catalog.find(i => i.sku === sku)?.category || "unknown";
+
   // Primary
+  const activeQty = option.new_qty || session.primary_item.qty;
   cartLines.push({
     sku: session.primary_item.sku,
-    name: session.primary_item.name || session.primary_item.sku, 
-    qty: session.primary_item.qty,
+    name: session.primary_item.name || session.primary_item.sku,
+    category: getCategory(session.primary_item.sku),
+    qty: activeQty,
     unitPaise: option.unit_price_paise,
-    linePaise: option.unit_price_paise * session.primary_item.qty
+    linePaise: option.unit_price_paise * activeQty
   });
 
   // Companions
@@ -236,6 +247,7 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
       cartLines.push({
         sku: b.addon_sku,
         name: b.addon_name,
+        category: getCategory(b.addon_sku),
         qty: b.addon_qty,
         unitPaise: b.discounted_price_paise,
         linePaise: b.discounted_price_paise * b.addon_qty
@@ -243,7 +255,20 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
     }
   }
 
-  const cartId = persistQuote(cartLines, option.total_amount_paise);
+  // Calculate list price total to survive M2
+
+  const getList = sku => catalog.find(i => i.sku === sku)?.pricePaise || 0;
+  const listTotal = cartLines.reduce((sum, item) => sum + (getList(item.sku) * item.qty), 0);
+  
+  const cartId = persistQuote(cartLines, listTotal, option.total_amount_paise);
+
+  if (buyer_id && buyer_mandate) {
+    // Lazy: just create or overwrite mandate if declared here
+    const { createMandate, getMandate, revokeMandate } = require("./mandates.js");
+    const existing = getMandate(buyer_id);
+    if (existing) revokeMandate(existing.id);
+    createMandate(buyer_id, buyer_mandate.max_amount);
+  }
 
   // Directly create order
   const result = await createOrder({
@@ -251,12 +276,19 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
     missionId: missionId,
     actor: { type: "agent", id: buyer_id || "negotiator" },
   });
+if (result.status === 'denied') {
+    return res.status(403).json({ 
+      settled: true, 
+      option_id, 
+      cartId, 
+      checkout: { ...result, error: { code: "POLICY_DENIED", message: result.reason } } 
+    });
+  }
 
   res.json({
     settled: true,
     option_id,
     cartId,
     checkout: result
-  });
-}));
+  });}));
 
