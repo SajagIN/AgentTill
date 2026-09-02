@@ -100,6 +100,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
     mission = transition(mission.missionId, "POLICY_CHECK");
   }
 
+  const authorizedTotal = cart.negotiatedTotalPaise ?? cart.totalPaise;
   const decision = authorize({
     actorId: actor.id,
     actorType: actor.type,

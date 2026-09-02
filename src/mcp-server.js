@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { getCatalog, quoteItems, persistQuote, seedCatalog } from "./catalog.js";
 import { createOrder } from "./money-actions.js";
+import { createMandate, getMandate, revokeMandate } from "./mandates.js";
 import { processRfq, getSession } from "./negotiation.js";
 
 const server = new Server({
@@ -52,6 +53,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+
+    {
+      name: "setup_autopay_mandate",
+      description: "Create an autopay mandate for a programmatic buyer.",
+      inputSchema: {
+        type: "object",
+        properties: { buyer_id: { type: "string" }, max_amount_paise: { type: "number" } },
+        required: ["buyer_id", "max_amount_paise"]
+      }
+    },
+    {
+      name: "get_autopay_status",
+      description: "Check the status of an existing autopay mandate.",
+      inputSchema: {
+        type: "object",
+        properties: { buyer_id: { type: "string" } },
+        required: ["buyer_id"]
+      }
+    },
+    {
+      name: "revoke_autopay_mandate",
+      description: "Revoke an active autopay mandate.",
+      inputSchema: {
+        type: "object",
+        properties: { mandate_id: { type: "string" } },
+        required: ["mandate_id"]
+      }
+    },
       name: "accept_negotiation_offer",
       description: "Accept a negotiated counter-offer and finalize the purchase.",
       inputSchema: {
@@ -111,6 +140,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify({ settled: true, cartId, checkout: result }, null, 2) }] };
       }
       
+
+      case "setup_autopay_mandate": {
+        const id = createMandate(args.buyer_id, args.max_amount_paise);
+        return { content: [{ type: "text", text: JSON.stringify({ status: "ACTIVE", mandate_id: id }) }] };
+      }
+      
+      case "get_autopay_status": {
+        const mandate = getMandate(args.buyer_id);
+        if (!mandate) return { content: [{ type: "text", text: JSON.stringify({ status: "NOT_FOUND" }) }] };
+        return { content: [{ type: "text", text: JSON.stringify(mandate) }] };
+      }
+      
+      case "revoke_autopay_mandate": {
+        revokeMandate(args.mandate_id);
+        return { content: [{ type: "text", text: JSON.stringify({ status: "REVOKED" }) }] };
+      }
+
       default: throw new Error(`Unknown tool: ${request.params.name}`);
     }
   } catch (err) {

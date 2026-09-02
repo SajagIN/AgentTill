@@ -13,7 +13,7 @@ export function authorize({ actorId, actorType, action, amountPaise, ctx }) {
   for (const r of POLICY_RULES) {
     const applicable = r.appliesTo.includes(action);
     const outcome = applicable
-      ? r.evaluate({ action, amountPaise, ctx: ctx ?? {} })
+      ? r.evaluate({ actorId, actorType, action, amountPaise, ctx: ctx ?? {} })
       : { outcome: "pass", detail: `not applicable to action "${action}"` };
     ruleEvals.push({ ruleId: r.id, params: r.params, outcome: outcome.outcome, detail: outcome.detail });
   }

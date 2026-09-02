@@ -29,6 +29,7 @@ const CheckoutBody = z
   .object({
     cartId: z.string().min(6).max(32),
     missionId: z.string().max(64).optional(),
+    buyerId: z.string().optional(),
   })
   .strict();
 
@@ -76,7 +77,7 @@ api.post("/checkout", wrap(async (req, res) => {
   const result = await createOrder({
     cartId: parsed.data.cartId,
     missionId: parsed.data.missionId,
-    actor: { type: "human", id: "operator" },
+    actor: { type: "human", id: parsed.data.buyerId || "operator" },
   });
   if (result.status === "denied") {
     return res.status(403).json({ ...result, error: { code: "POLICY_DENIED", message: result.reason } });
@@ -204,7 +205,7 @@ api.post("/negotiate/rfq", (req, res) => {
 });
 
 api.post("/negotiate/accept", wrap(async (req, res) => {
-  const { session_id, option_id, missionId } = req.body;
+  const { session_id, option_id, missionId, buyer_id } = req.body;
   if (!session_id || !option_id) {
     return res.status(400).json({ error: "VALIDATION_ERROR", message: "session_id and option_id required" });
   }
@@ -248,7 +249,7 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
   const result = await createOrder({
     cartId: cartId,
     missionId: missionId,
-    actor: { type: "agent", id: "negotiator" },
+    actor: { type: "agent", id: buyer_id || "negotiator" },
   });
 
   res.json({

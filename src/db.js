@@ -15,6 +15,17 @@ db.exec(`
     price_paise INTEGER NOT NULL,
     stock       INTEGER NOT NULL
   );
+  
+  CREATE TABLE IF NOT EXISTS mandates (
+    id TEXT PRIMARY KEY,
+    buyer_id TEXT NOT NULL,
+    max_amount_paise INTEGER NOT NULL,
+    allowed_merchants TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_mandates_buyer ON mandates (buyer_id);
+
   CREATE TABLE IF NOT EXISTS carts (
     id          TEXT PRIMARY KEY,
     items_json  TEXT NOT NULL,
@@ -107,6 +118,7 @@ const insertCartStmt = db.query(
 const getCartStmt = db.query(
   "SELECT id, items_json, total_paise, created_at, negotiated_total_paise FROM carts WHERE id = ?",
 );
+const clearMandatesStmt = db.query("DELETE FROM mandates");
 const clearCartsStmt = db.query("DELETE FROM carts");
 
 const insertMissionStmt = db.query(
@@ -334,6 +346,8 @@ export function resetDemoData() {
     clearAuditStmt.run();
     clearOrdersStmt.run();
     clearMissionsStmt.run();
+    
+    clearMandatesStmt.run();
     clearCartsStmt.run();
     clearProductsStmt.run();
   })();

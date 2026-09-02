@@ -11,6 +11,21 @@ const ALLOWED_CATEGORIES = ["office", "it", "supplies"];
 const APPROVAL_THRESHOLD_PAISE = 100000; // ₹1,000
 
 export const POLICY_RULES = [
+  {
+    id: "mandate_ceiling",
+    appliesTo: ["create_order"],
+    params: {},
+    evaluate({ actorId, amountPaise }) {
+      const mandate = getMandate(actorId);
+      if (!mandate) return { outcome: "pass", detail: "no active mandate for actor" };
+      
+      if (amountPaise > mandate.max_amount_paise) {
+         return { outcome: "fail", detail: `Order total (${amountPaise}) exceeds mandate ceiling (${mandate.max_amount_paise})` };
+      }
+      return { outcome: "pass", detail: "within mandate ceiling" };
+    }
+  },
+
   rule(
     "max_basket_value",
     { limitPaise: BASKET_LIMIT_PAISE },
@@ -90,4 +105,5 @@ export const POLICY_RULES = [
   ),
 ];
 
+import { getMandate } from "./mandates.js";
 export const RULES_VERSION = "rules-v2-real";
