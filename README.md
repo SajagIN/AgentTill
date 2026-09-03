@@ -1,166 +1,72 @@
 # AgentTill
 
-> Autonomous buyer agent with deterministic policy gate for the Razorpay Buildathon (Track 01).
+AgentTill is an autonomous buyer agent that manages procurement missions, handles multi-attempt checkouts via Razorpay, strictly enforces business spending policies, and provides a fully immutable Merkle-tree audit trail for all transactions.
 
-```
-+-------------------+     +------------------+     +-------------------+
-|  Buyer Agent      |---->|  Policy Engine   |---->|  Razorpay API     |
-|  (HTTP tools)     |     |  (deny/approve)  |     |  (test mode)      |
-+-------------------+     +------------------+     +-------------------+
-         |                        |                        |
-         v                        v                        v
-   +-------------------+   +------------------+   +-------------------+
-   |  Catalog/Quote    |   |  Append-Only     |   |  Webhooks         |
-   |  SQLite           |   |  Audit Trail     |   |  (HMAC-SHA256)    |
-   +-------------------+   +------------------+   +-------------------+
-```
+## Features
 
-## Quickstart
+- **Decoupled Autonomous Agent**: Runs a 12-iteration loop extracting keyword intents, mapping them to SKUs, generating quotes, and driving the checkout process.
+- **Plurality & Similarity Handling**: Smoothly extracts base intents from natural language (e.g., "notebooks" -> "notebook").
+- **Smart Re-planning**: When policies deny a checkout (e.g., "Max cart volume reached"), the agent iteratively trims the cart and requotes to find policy-compliant arrangements automatically.
+- **Isolated Payment Layer**: Agent operates independently of the `money-actions.js` M1/M2 boundary logic preventing hallucinations from interacting with the critical payment layer.
+- **Human In the Loop (HITL)**: Policies requiring manual override push the mission into `AWAITING_APPROVAL`. The agent suspends. Admins approve/deny via `/approvals/:id/approve`, allowing the agent to seamlessly resume.
+- **Idempotency & Cryptographic Auditing (Phase 5/6)**: Every action drops immutable rows into `audit_events`. High-stakes transitions generate a 4-leaf cryptographic receipt (Merkle root matching the state).
+
+## Run Locally
+
+### Requirements
+- [Bun v1.2+](https://bun.sh/)
+- Razorpay API Test Mode keys.
+
+### Start Up
 
 ```bash
-# Clone and install
+git clone https://github.com/SajagIN/agent-till.git
+cd agent-till
 bun install
+```
 
-# Configure Razorpay test keys
+Configure environment:
+```bash
 cp .env.example .env
-# Edit .env with your rzp_test_* keys from https://dashboard.razorpay.com/app/test/keys
-
-# Seed database
-bun run seed
-
-# Run demo mission (agent searches catalog, creates cart, triggers approval)
-bun run demo
-
-# Start server for dashboard/API
-bun run dev
+# Edit .env with your Razorpay Test Key and Secret
 ```
 
-## Demo Output
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  AgentTill Demo Mission — Track 01
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Intent:  restock: notebooks, markers, coffee
-Budget:  ₹2000.00
-...
-Agent Result:
-Status:     needs_approval
-Approval:   apr_xxxxxxxx
-Pay:        https://razorpay.com/pay/...
-
-Dashboard:  http://localhost:3000/dashboard.html
+Start the system (Demo mode seeds the database and starts the express server and agent execution):
+```bash
+bun scripts/demo-mission.js
 ```
 
-## Architecture
+## Architecture Map
 
 ```mermaid
-flowchart TB
-    subgraph Buyer Agent
-        A[runMission] --> B[searchCatalog]
-        B --> C[getQuote]
-        C --> D[beginCheckout]
-        D --> E{Policy Result}
-        E -->|needs_approval| F[approve via API]
-        E -->|denied| G[re-plan]
-        E -->|created| H[Order Created]
-    end
+graph TD
+  subgraph Agent Runtime
+    Intent(User Intent String) --> NLPExtract[Keyword extraction]
+    NLPExtract --> CatalogMatch[Search DB Catalog]
+    CatalogMatch --> QuoteProc[Quote via /quote]
+    QuoteProc --> Checkout[Call /checkout]
+  end
 
-    subgraph Policy Engine
-        I[authorize] --> J[Evaluate Rules]
-        J --> K[Precedence: deny > approve > allow]
-    end
+  subgraph Money Boundary M1/M2
+    Checkout --> M2Guard{Catalog Price Verify}
+    M2Guard -- Mismatch --> 422[MoneyActionError]
+    M2Guard -- Match --> PolicyEngine
+    PolicyEngine --> Evaluate[(Evaluate Rules v2)]
+  end
+  
+  subgraph Business Policies
+    Evaluate -- "Deny (Oversize, Unauth)" --> RejectOrder[State: REJECTED]
+    Evaluate -- "Gate (VIP Threshold)" --> AwaitApproval[State: AWAITING_APPROVAL]
+    Evaluate -- "Pass" --> RAZORPAY 
+  end
 
-    subgraph Money Core
-        L[createOrder] --> M[Policy Check]
-        M --> N[Razorpay Order]
-        N --> O[Payment Link]
-    end
+  subgraph Payments
+    RAZORPAY[Razorpay Test API] --> PayLink(Create Payment Link)
+    PayLink --> PayState[State: PAYING]
+  end
 
-    subgraph Audit Trail
-        P[appendEvent] --> Q[4-leaf Merkle Receipt]
-    end
+  RejectOrder -.-> AgentPlan(Replan Cart Drops Item) -.-> QuoteProc
 ```
 
-## Policy Rules
-
-| Rule | Threshold | Behavior |
-|------|-----------|----------|
-| `max_basket_value` | ₹2,500 | Denies cart > limit |
-| `hourly_spend_cap` | ₹5,000 | Denies if trailing-hour spend + cart > cap |
-| `velocity_max_checkouts_per_hour` | 4 | Denies if >4 checkouts in trailing hour |
-| `category_allowlist` | — | Denies SKUs in `catering` category |
-| `approval_above` | ₹1,000 | Gates cart > ₹1,000 for human approval |
-| `mission_budget` | Mission budget | Denies cart exceeding mission budget |
-| `mandate_ceiling` | Buyer mandate | Denies exceeding buyer's spend limit |
-
-## Where AI Is/Isn't Used
-
-**AI Controls:**
-- Mission intent parsing (simple keyword extraction)
-- Cart selection from search results
-- Retry/backoff logic on failures
-
-**AI Never Touchs:**
-- Policy decisions (deterministic rules)
-- Money arithmetic (integer paise only)
-- Razorpay API calls (single authorized module)
-- Webhook signature verification (timing-safe HMAC)
-- Audit trail construction (append-only, Merkle-verified)
-
-## Failure Modes
-
-| Scenario | Behavior | Recovery |
-|----------|----------|----------|
-| Card decline (`failure@razorpay`) | Mission → FAILED, then RETRYING | Auto-retry with exponential backoff |
-| Quote→order mismatch | Hard stop before order creation | Cart re-priced from catalog |
-| Policy denial | Mission → REJECTED, agent re-plans | Agent retries with smaller cart |
-| Webhook tampering | 401 rejected, zero state change | Valid signature required |
-| Duplicate webhook | Idempotent processing | Only first event executes |
-| Two failed retries | Mission → ESCALATED | Human approval required |
-
-## Dashboard
-
-Open `http://localhost:3000/dashboard.html` to view:
-- Mission list with status
-- Audit timeline per mission
-- Approval queue with one-click resolve
-
-## File Structure
-
-```
-src/
-├── agent/
-│   ├── agent.js      # Buyer agent loop (3 retries, backoff)
-│   ├── tools.js      # HTTP client wrappers
-│   └── prompts.js    # Agent system prompt
-├── audit.js          # Append-only event store
-├── approvals.js      # Human-in-the-loop gate
-├── catalog.js        # 14 products, 4 categories
-├── config.js         # Zod-validated environment
-├── db.js             # SQLite schema + CRUD
-├── mand
-
-ates.js     # Buyer spend limits
-├── merkle-receipt.js # 4-leaf Merkle tree for tamper-evident logs
-├── missions.js      # State machine (PLANNING → CONFIRMED)
-├── money-actions.js # createOrder, confirmPayment, retry, refund
-├── policy-engine.js # Deterministic authorization
-├── policy-rules.js  # 6 rule definitions
-├── razorpay-client.js # Official SDK wrapper
-├── routes.js        # REST API endpoints
-├── server.js        # Express app
-└── webhooks.js      # HMAC-verified webhook handlers
-```
-
-## Test Suite
-
-```bash
-bun test        # 33 tests, 82 assertions
-```
-
-All tests pass without mocking the Razorpay SDK (stubs verify no unintended API calls).
-
-## License
-
-MIT — built for the Razorpay Buildathon Track 01.
+## Failure Playbook & Policies
+For information on policy definitions, error handling, rate limits, and transition boundaries, read `docs/failure-playbook.md`.
