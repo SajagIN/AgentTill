@@ -69,11 +69,11 @@ test("unhandled event types are stored and ignored, not errors", async () => {
   expect(isSupportedEventType("payment.captured")).toBe(true);
 });
 
-test("payment-link correlation: internal order_id misses, notes.missionId resolves our order", () => {
+test("payment-link correlation: internal order_id misses, notes.missionId resolves our order", async () => {
   // Mirrors the live 2026-08-23 finding: link payments carry the LINK's internal
   // order id; our notes ride on the payment entity.
-  const { resolveOrderForPayment } = require("./money-actions.js");
-  const { insertMission, saveOrder } = require("./db.js");
+  const { resolveOrderForPayment } = await import("./money-actions.js");
+  const { insertMission, saveOrder } = await import("./db.js");
 
   const missionId = insertMission("correlation test", 500000, "PAYING");
   saveOrder({

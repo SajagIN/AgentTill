@@ -32,6 +32,7 @@ const server = startServer();
 await new Promise(resolve => setTimeout(resolve, 500));
 console.log("✓  Server ready\n");
 
+let result;
 try {
   // Step 3: Create mission
   const missionIntent = "restock: notebooks, markers, coffee";
@@ -52,7 +53,7 @@ try {
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   const mission = { missionId, intent: missionIntent, budgetPaise };
-  const result = await runMission(mission);
+  result = await runMission(mission);
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("  Agent Result");
@@ -91,23 +92,28 @@ try {
 
   const timeline = getMissionTimeline(missionId);
   for (const event of timeline) {
-    const ts = formatTimestamp(event.timestamp);
+    const ts = formatTimestamp(event.ts);
     const actionPad = event.action.padEnd(20);
-    console.log(`${ts}  ${actionPad}  ${event.reason || ""}`);
+    console.log(`${ts}  ${actionPad}  ${event.decision?.reason || event.outcome || ""}`);
 
-    if (event.details) {
-      const details = typeof event.details === "string" ? JSON.parse(event.details) : event.details;
+    if (event.decision) {
+      const details = typeof event.decision === "string" ? JSON.parse(event.decision) : event.decision;
 
       if (details.ruleEvals) {
         console.log(`                                          ├─ Rules evaluated: ${details.ruleEvals.length}`);
         for (const rule of details.ruleEvals) {
-          const symbol = rule.result === "deny" ? "✗" : rule.result === "needs_approval" ? "!" : "✓";
-          console.log(`                                          │  ${symbol} ${rule.rule}: ${rule.result}`);
+          if (rule.outcome) {
+            const symbol = rule.outcome === "pass" ? "✓" : rule.outcome === "triggered" ? "!" : "✗";
+            console.log(`                                          │  ${symbol} ${rule.ruleId}: ${rule.outcome === "pass" ? "pass" : rule.outcome}`);
+          } else if (rule.result) {
+            const symbol = (rule.result === "pass" || rule.result === "allow") ? "✓" : rule.result === "needs_approval" ? "!" : "✗";
+            console.log(`                                          │  ${symbol} ${rule.ruleId || rule.rule}: ${rule.result}`);
+          }
         }
       }
 
-      if (details.amountPaise) {
-        console.log(`                                          ├─ Amount: ${paiseToINR(details.amountPaise)}`);
+      if (event.amountPaise) {
+        console.log(`                                          ├─ Amount: ${paiseToINR(event.amountPaise)}`);
       }
     }
   }
@@ -126,5 +132,5 @@ try {
 } finally {
   // Clean shutdown
   server.close();
-  process.exit(0);
+  if(result?.status !== "success" && result?.status !== "needs_approval") process.exit(1); else process.exit(0);
 }

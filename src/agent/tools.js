@@ -71,3 +71,8 @@ export async function deny(approvalId) {
   });
   return handleResponse(res);
 }
+
+export async function getMissionStatus(missionId) {
+  const res = await fetch(`${BASE_URL}/missions/${encodeURIComponent(missionId)}`);
+  return handleResponse(res);
+}

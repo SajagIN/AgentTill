@@ -52,7 +52,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
     // Manual/ad-hoc checkout: implicit mission keeps the audit trail uniform.
     mission = createMission({ intent: "manual checkout", budgetPaise: null });
   }
-  if (mission.state === "PLANNING") {
+  if (mission.state === "PLANNING" || mission.state === "REJECTED") {
     mission = transition(mission.missionId, "QUOTED");
   }
 
