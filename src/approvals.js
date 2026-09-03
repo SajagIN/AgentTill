@@ -3,6 +3,7 @@ import {
   getApprovalRow,
   listApprovalRows,
   setApprovalDecision,
+  getPendingApprovalForCart,
 } from "./db.js";
 import { appendEvent } from "./audit.js";
 import { getMission, transition, TransitionError } from "./missions.js";
@@ -10,6 +11,10 @@ import { getMission, transition, TransitionError } from "./missions.js";
 const HUMAN = { type: "human", id: "operator" };
 
 export function createApproval({ missionId, cartId, amountPaise, reason, ruleEvals }) {
+  const existing = getPendingApprovalForCart(cartId);
+  if (existing) {
+    return { approvalId: existing.approvalId, status: "pending" };
+  }
   const approvalId = insertApproval({ missionId, cartId, amountPaise, reason, ruleEvals });
   return { approvalId, status: "pending" };
 }

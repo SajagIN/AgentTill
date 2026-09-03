@@ -164,11 +164,25 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
       receipt: cartId,
       notes,
     });
-    const link = await razorpay.createPaymentLink({
-      amountPaise: authorizedTotal,
-      referenceId: order.id,
-      notes,
-    });
+    let link = { id: null, short_url: null };
+    try {
+      link = await razorpay.createPaymentLink({
+        amountPaise: authorizedTotal,
+        referenceId: order.id,
+        notes,
+      });
+    } catch (linkErr) {
+      if (linkErr.message.includes("RATE_LIMIT_EXCEEDED") || linkErr.message.includes("test mode limit")) {
+        console.warn(`[money] Payment Link creation failed due to test limits. Falling back to Standard Checkout URL for order ${order.id}`);
+        // For Razorpay test mode exhaustion, provide our own internal checkout interface
+        link = {
+          id: `fallback_${order.id}`,
+          short_url: `http://localhost:3000/pay/${order.id}`
+        };
+      } else {
+        throw linkErr;
+      }
+    }
 
     saveOrder({
       orderId: order.id,
@@ -543,11 +557,24 @@ export async function retryPayment({ orderId, missionId, attempt, actor }) {
       notes,
     });
 
-    const link = await razorpay.createPaymentLink({
-      amountPaise: order.amountPaise,
-      referenceId: newOrder.id,
-      notes,
-    });
+    let link = { id: null, short_url: null };
+    try {
+      link = await razorpay.createPaymentLink({
+        amountPaise: order.amountPaise,
+        referenceId: newOrder.id,
+        notes,
+      });
+    } catch (linkErr) {
+      if (linkErr.message.includes("RATE_LIMIT_EXCEEDED") || linkErr.message.includes("test mode limit")) {
+        console.warn(`[money] Payment Link creation failed due to test limits on RETRY. Falling back to Standard Checkout URL for order ${newOrder.id}`);
+        link = {
+          id: `fallback_${newOrder.id}`,
+          short_url: `http://localhost:3000/pay/${newOrder.id}`
+        };
+      } else {
+        throw linkErr;
+      }
+    }
 
     saveOrder({
       orderId: newOrder.id,

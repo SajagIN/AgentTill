@@ -165,6 +165,7 @@ const insertApprovalStmt = db.query(`
   VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
 `);
 const getApprovalStmt = db.query("SELECT * FROM approvals WHERE id = ?");
+const getPendingApprovalForCartStmt = db.query("SELECT * FROM approvals WHERE cart_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1");
 const listApprovalsStmt = db.query("SELECT * FROM approvals ORDER BY created_at DESC");
 const setApprovalDecisionStmt = db.query(
   "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",
@@ -335,6 +336,11 @@ export function insertApproval(a) {
 
 export function getApprovalRow(approvalId) {
   const row = getApprovalStmt.get(approvalId);
+  return row ? rowToApproval(row) : undefined;
+}
+
+export function getPendingApprovalForCart(cartId) {
+  const row = getPendingApprovalForCartStmt.get(cartId);
   return row ? rowToApproval(row) : undefined;
 }
 

@@ -6,7 +6,8 @@ import { createMission, listAllMissions, getMission } from "./missions.js";
 import { listApprovals, resolveApproval } from "./approvals.js";
 import { getMissionTimeline, getMissionReceipt } from "./audit.js";
 import { getMandate, createMandate, revokeMandate } from "./mandates.js";
-
+import { findOrder } from "./db.js";
+import { config } from "./config.js";
 import { processRfq, getSession } from "./negotiation.js";
 export const api = express.Router();
 
@@ -33,6 +34,67 @@ const CheckoutBody = z
     buyerId: z.string().optional(),
   })
   .strict();
+
+api.get("/pay/:orderId", (req, res) => {
+  const order = findOrder(req.params.orderId);
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
+
+  // Pre-filled Standard Checkout payload
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Complete Checkout</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f7f9fa; }
+    h2 { color: #333; margin-bottom: 8px; }
+    p { color: #666; margin-bottom: 24px; }
+    .btn { background: #3399cc; color: white; border: none; padding: 12px 24px; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+    .btn:hover { background: #2b88b7; }
+  </style>
+</head>
+<body>
+  <h2>Complete Payment</h2>
+  <p>Amount: ₹\${(order.amountPaise / 100).toFixed(2)}</p>
+  <button id="rzp-button" class="btn">Pay Now</button>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    var options = {
+      "key": "${config.razorpayKeyId}",
+      "amount": "${order.amountPaise}",
+      "currency": "INR",
+      "name": "AgentTill",
+      "description": "Programmatic Purchasing",
+      "order_id": "${order.orderId}",
+      "handler": function (response) {
+         document.body.innerHTML = '<h2>Payment Successful!</h2><p>You can close this tab and return to Claude.</p><p><small>Payment ID: ' + response.razorpay_payment_id + '</small></p>';
+      },
+      "prefill": {
+        "name": "AgentTill Corporate",
+        "email": "agent@example.com",
+        "contact": "9999999999"
+      },
+      "theme": {
+        "color": "#3399cc"
+      }
+    };
+    var rzp1 = new Razorpay(options);
+    rzp1.on('payment.failed', function (response){
+        alert(response.error.description);
+    });
+    document.getElementById('rzp-button').onclick = function(e){
+      rzp1.open();
+      e.preventDefault();
+    }
+  </script>
+</body>
+</html>
+  `;
+  res.send(html);
+});
 
 api.get("/catalog", (_req, res) => {
   res.json({ products: getCatalog() });
