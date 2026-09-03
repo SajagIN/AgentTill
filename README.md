@@ -68,5 +68,36 @@ graph TD
   RejectOrder -.-> AgentPlan(Replan Cart Drops Item) -.-> QuoteProc
 ```
 
+## AI Boundaries & Security
+To prevent catastrophic overspending or hallucinated pricing, AgentTill explicitly draws lines around what AI is allowed to do.
+
+| Component | Is AI Involved? | Explanation |
+|---|---|---|
+| **Intent Parsing** | Yes | Extracting shopping constraints ("I need pens and markers") from natural languages. |
+| **Catalog Lookup** | Yes | The agent maps its extracted constraints to actual DB items via the API proxy. |
+| **Pricing/Quoting** | **No** | Server-side boundaries (M2) retotal the cart from the DB. |
+| **Policy Evaluation** | **No** | Deterministic business rules (budget tracking, category blocks, velocity) strictly govern checkpoints. |
+| **Razorpay Calls** | **No** | Completely isolated to `money-actions.js`. |
+
+## Business Policy Rules
+
+| Rule ID | Type | Action | Description |
+|---|---|---|---|
+| `mandate_ceiling` | Deny | `create_order` | Blocks single carts > ₹50,000. |
+| `max_basket_value` | Deny | `create_order` | Blocks unapproved purchases based on dynamic logic. |
+| `hourly_spend_cap` | Deny | `create_order` | Hard caps total agent spend within a sliding 60-minute window (₹20,000) using audit history. |
+| `velocity_limit` | Deny | `create_order` | Prevents the agent from creating more than 4 checkouts in an hour. |
+| `category_allowlist` | Deny | `create_order` | Ensures procured SKUs match allowed B2B MCC codes (e.g. no "software_subscriptions" if unapproved). |
+| `approval_above` | Gate | `create_order` | Checkouts exceeding ₹1,000 silently pause the mission and request manual HTTP token approval. |
+| `mission_budget` | Deny | `create_order` | Agent carts cannot exceed the hard ceiling defined in the mission intent. |
+
 ## Failure Playbook & Policies
-For information on policy definitions, error handling, rate limits, and transition boundaries, read `docs/failure-playbook.md`.
+For extensive information on Error Classes, SDK Throttle handling (HTTP 429), and State Lock, read `docs/failure-playbook.md`.
+
+## Incident Log Teaser
+During deployment, building deterministic AI requires acknowledging fail states:
+> *Incident 001 - The Agent hallucinated plural strings (`markers` vs `marker`) creating a Zero-Match state causing it to return early.*
+> *Incident 002 - Agent attempted a `REJECTED -> QUOTED` transition sequentially over the rate limit after stripping the cart too aggressively. Added transition allowance and retry-limits to `missions.js`.*
+> *Incident 003 - `import.meta.url` checking failed during Windows process spawn. Resolved using `fileURLToPath` standardizations.*
+
+*(See full incident log in the repository)*
