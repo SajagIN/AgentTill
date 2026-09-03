@@ -47,8 +47,15 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-app.listen(config.port, () => {
-  console.log(
-    `agenttill ▸ listening on http://localhost:${config.port} · sqlite: agenttill.db (WAL on)`,
-  );
-});
+export function startServer() {
+  return app.listen(config.port, () => {
+    console.log(
+      `agenttill ▸ listening on http://localhost:${config.port} · sqlite: agenttill.db (WAL on)`,
+    );
+  });
+}
+
+// Auto-start only when run directly
+if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`) {
+  startServer();
+}

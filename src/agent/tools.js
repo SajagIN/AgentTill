@@ -15,13 +15,17 @@ async function handleResponse(res) {
   return body;
 }
 
-export async function searchCatalog(sku) {
+export async function searchCatalog(query) {
   const res = await fetch(`${BASE_URL}/catalog`);
   const body = await handleResponse(res);
   const products = body.products ?? [];
-  if (!sku) return products;
-  const needle = sku.toLowerCase();
-  return products.filter((p) => p.sku.toLowerCase().includes(needle));
+  if (!query) return products;
+  const needle = query.toLowerCase();
+  return products.filter((p) =>
+    p.sku.toLowerCase().includes(needle) ||
+    p.name.toLowerCase().includes(needle) ||
+    p.category.toLowerCase().includes(needle)
+  );
 }
 
 export async function getQuote(items) {

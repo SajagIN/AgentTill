@@ -53,8 +53,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
-
-    {
       name: "setup_autopay_mandate",
       description: "Create an autopay mandate for a programmatic buyer.",
       inputSchema: {
@@ -81,6 +79,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["mandate_id"]
       }
     },
+    {
       name: "accept_negotiation_offer",
       description: "Accept a negotiated counter-offer and finalize the purchase.",
       inputSchema: {
@@ -104,54 +103,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return { content: [{ type: "text", text: JSON.stringify(products, null, 2) }] };
       }
-      
+
       case "request_quote": {
         const result = quoteItems(args.items);
         if (!result.ok) throw new Error(`UNKNOWN_SKU: ${result.unknownSkus.join(", ")}`);
         const cartId = persistQuote(result.lines, result.totalPaise);
         return { content: [{ type: "text", text: JSON.stringify({ cartId, items: result.lines, totalPaise: result.totalPaise }, null, 2) }] };
       }
-      
+
       case "submit_machine_purchase": {
         const result = await createOrder({ cartId: args.cartId, missionId: args.missionId, actor: { type: "agent", id: "mcp_client" } });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
+
       case "submit_commerce_rfq": {
         const result = processRfq({ items: args.items });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
+
       case "accept_negotiation_offer": {
         const session = getSession(args.session_id);
         if (!session) throw new Error("session not found");
         const option = session.counter_offers[args.option_id];
         if (!option) throw new Error("invalid option_id");
-        
+
         const cartLines = [{ sku: session.primary_item.sku, name: session.primary_item.name, qty: session.primary_item.qty, unitPaise: option.unit_price_paise, linePaise: option.unit_price_paise * session.primary_item.qty }];
         if (option.bundled_items) {
           for (const b of option.bundled_items) {
             cartLines.push({ sku: b.addon_sku, name: b.addon_name, qty: b.addon_qty, unitPaise: b.discounted_price_paise, linePaise: b.discounted_price_paise * b.addon_qty });
           }
         }
-        
+
         const cartId = persistQuote(cartLines, option.total_amount_paise);
         const result = await createOrder({ cartId, missionId: args.missionId, actor: { type: "agent", id: "negotiator" } });
         return { content: [{ type: "text", text: JSON.stringify({ settled: true, cartId, checkout: result }, null, 2) }] };
       }
-      
 
       case "setup_autopay_mandate": {
         const id = createMandate(args.buyer_id, args.max_amount_paise);
         return { content: [{ type: "text", text: JSON.stringify({ status: "ACTIVE", mandate_id: id }) }] };
       }
-      
+
       case "get_autopay_status": {
         const mandate = getMandate(args.buyer_id);
         if (!mandate) return { content: [{ type: "text", text: JSON.stringify({ status: "NOT_FOUND" }) }] };
         return { content: [{ type: "text", text: JSON.stringify(mandate) }] };
       }
-      
+
       case "revoke_autopay_mandate": {
         revokeMandate(args.mandate_id);
         return { content: [{ type: "text", text: JSON.stringify({ status: "REVOKED" }) }] };
