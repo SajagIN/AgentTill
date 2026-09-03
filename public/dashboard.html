@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentTill — Mission Control</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header>
+    <h1>AgentTill</h1>
+    <p class="tagline">Mission Control for Bounded AI Commerce</p>
+    <div class="status-strip">
+      <div class="status-chip allow">✅ Production Mode</div>
+      <div class="status-chip gate">⏸ All guards active</div>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <!-- M I S S I O N S -->
+    <section class="card missions" id="missions-section">
+      <h2>Missions</h2>
+      <div class="controls">
+        <button class="btn btn-primary" id="new-mission-btn">New Mission</button>
+        <button class="btn btn-secondary" id="refresh-missions-btn">Refresh</button>
+      </div>
+      <div class="missions-grid" id="missions-grid">
+        <div class="mission-card loading">Loading missions...</div>
+      </div>
+    </section>
+
+    <!-- A P P R O V A L S -->
+    <section class="card approvals" id="approvals-section">
+      <h2>Pending Approvals</h2>
+      <div class="controls">
+        <button class="btn btn-primary" id="refresh-approvals-btn">Refresh</button>
+      </div>
+      <div class="approvals-list" id="approvals-list">
+        <div class="approval-card loading">Loading approvals...</div>
+      </div>
+    </section>
+
+    <!-- A U D I T   T I M E L I N E -->
+    <section class="card timeline" id="timeline-section">
+      <h2>Audit Timeline</h2>
+      <div class="controls">
+        <select class="select" id="mission-select">
+          <option value="">-- Select Mission --</option>
+        </select>
+        <button class="btn btn-secondary" id="refresh-timeline-btn">Refresh</button>
+      </div>
+      <div class="timeline-container" id="timeline-container">
+        <div class="empty-state">Select a mission to view its timeline</div>
+      </div>
+    </section>
+
+    <!-- R E C E I P T S -->
+    <section class="card receipts" id="receipts-section">
+      <h2>Merkle Receipts</h2>
+      <div class="controls">
+        <select class="select" id="receipt-mission-select">
+          <option value="">-- Select Mission --</option>
+        </select>
+        <button class="btn btn-secondary" id="refresh-receipts-btn">Refresh</button>
+      </div>
+      <div class="receipt-display" id="receipt-display">
+        <div class="empty-state">Select a mission to view its receipt</div>
+      </div>
+    </section>
+
+    <!-- M O N E Y   A C T I O N S -->
+    <section class="card money" id="money-section">
+      <h2>Recent Money Actions</h2>
+      <div class="controls">
+        <select class="select" id="money-mission-select">
+          <option value="">-- All Missions --</option>
+        </select>
+        <button class="btn btn-secondary" id="refresh-money-btn">Refresh</button>
+      </div>
+      <div class="money-actions-list" id="money-actions-list">
+        <div class="empty-state">Select a mission to view money actions</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-content">
+      <div class="footer-section">
+        <h3>AgentTill — AI Commerce with Guardrails</h3>
+        <p>Bought by bounded AI buyers, sold by merchants who trust the system.</p>
+      </div>
+      <div class="footer-section">
+        <h4>Quick Links</h4>
+        <ul>
+          <li><a href="/health">Health Check</a></li>
+          <li><a href="/catalog">Product Catalog</a></li>
+        </ul>
+      </div>
+      <div class="footer-section">
+        <h4>System Status</h4>
+        <div class="status-indicator">
+          <span class="status-dot allow"></span> All Systems Operational
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2025 AgentTill — Built with Razorpay Test Mode • Privacy First • No Real Money</p>
+    </div>
+  </footer>
+
+  <!-- M O D A L S -->
+  <div class="modal-overlay" id="approval-modal">
+    <div class="modal">
+      <h2>Resolve Approval</h2>
+      <div class="approval-details" id="approval-details">
+        <!-- Populated by JS -->
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="deny-approval-btn">Deny</button>
+        <button class="btn btn-success" id="approve-approval-btn">Approve</button>
+        <button class="btn btn-secondary" id="cancel-modal-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

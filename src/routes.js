@@ -5,6 +5,7 @@ import { createOrder } from "./money-actions.js";
 import { createMission, listAllMissions, getMission } from "./missions.js";
 import { listApprovals, resolveApproval } from "./approvals.js";
 import { getMissionTimeline, getMissionReceipt } from "./audit.js";
+import { getMandate, createMandate, revokeMandate } from "./mandates.js";
 
 import { processRfq, getSession } from "./negotiation.js";
 export const api = express.Router();
@@ -226,7 +227,6 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
   // Build a cart out of the negotiated option
   const cartLines = [];
   
-  const { getCatalog } = require("./catalog.js");
   const catalog = getCatalog();
   const getCategory = sku => catalog.find(i => i.sku === sku)?.category || "unknown";
 
@@ -263,8 +263,6 @@ api.post("/negotiate/accept", wrap(async (req, res) => {
   const cartId = persistQuote(cartLines, listTotal, option.total_amount_paise);
 
   if (buyer_id && buyer_mandate) {
-    // Lazy: just create or overwrite mandate if declared here
-    const { createMandate, getMandate, revokeMandate } = require("./mandates.js");
     const existing = getMandate(buyer_id);
     if (existing) revokeMandate(existing.id);
     createMandate(buyer_id, buyer_mandate.max_amount);
