@@ -45,6 +45,21 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
   }
 
   let mission = missionId ? getMission(missionId) : undefined;
+  if (mission) {
+    const existingOrder = findLatestOrderByMission(mission.missionId);
+    if (existingOrder && existingOrder.cartId === cartId) {
+      return {
+        status: "created",
+        missionId: existingOrder.missionId,
+        orderId: existingOrder.orderId,
+        paymentLinkId: existingOrder.paymentLinkId,
+        paymentLinkUrl: existingOrder.paymentLinkUrl,
+        amountPaise: existingOrder.amountPaise,
+        duplicateResolved: true
+      };
+    }
+  }
+
   if (missionId && !mission) {
     throw new MoneyActionError(404, "MISSION_NOT_FOUND", `no mission with id ${missionId}`);
   }
