@@ -6,9 +6,9 @@
 - [x] PLAN.md
 - [x] specs/Memory.md
 - [x] specs/PRD.md
-- [ ] specs/Architecture.md
-- [ ] specs/Design.md
-- [ ] specs/Rules.md
-- [ ] specs/Phases.md
-- [ ] research.md
-- [ ] docs/failure-playbook.md
+- [x] specs/Architecture.md
+- [x] specs/Design.md
+- [x] specs/Rules.md
+- [x] specs/Phases.md
+- [x] research.md
+- [x] docs/failure-playbook.md

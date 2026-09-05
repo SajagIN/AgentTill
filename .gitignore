@@ -8,3 +8,4 @@ cloudflared.exe
 server.log
 reference/
 refenerece/
+tmp/

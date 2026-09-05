@@ -6,6 +6,7 @@ import { createOrder } from "./money-actions.js";
 import { createMandate, getMandate, revokeMandate } from "./mandates.js";
 import { processRfq, getSession } from "./negotiation.js";
 
+export function createMcpServer() {
 const server = new Server({
   name: "agenttill-mcp",
   version: "1.0.0",
@@ -34,10 +35,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "submit_machine_purchase",
-      description: "Execute a programmatic purchase through the deterministic Commerce Guardian.",
+      description: "Execute a programmatic purchase through the deterministic Commerce Guardian. Pass approvalId if retrying after manual approval.",
       inputSchema: {
         type: "object",
-        properties: { cartId: { type: "string" }, missionId: { type: "string" } },
+        properties: { cartId: { type: "string" }, missionId: { type: "string" }, approvalId: { type: "string" } },
         required: ["cartId"]
       }
     },
@@ -112,7 +113,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "submit_machine_purchase": {
-        const result = await createOrder({ cartId: args.cartId, missionId: args.missionId, actor: { type: "agent", id: "mcp_client" } });
+        const result = await createOrder({ cartId: args.cartId, missionId: args.missionId, approvalId: args.approvalId, actor: { type: "agent", id: "mcp_client" } });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
@@ -162,11 +163,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-async function main() {
+
+  return server;
+}
+
+import { fileURLToPath } from "node:url";
+
+export async function startStdio() {
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   seedCatalog();
   console.error("AgentTill MCP Server running on stdio");
 }
 
-main().catch(console.error);
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  startStdio().catch(console.error);
+}

@@ -8,6 +8,18 @@ db.exec("PRAGMA journal_mode = WAL;");
 db.exec("PRAGMA foreign_keys = ON;");
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS policy_configs (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+  );
+
+  INSERT OR IGNORE INTO policy_configs (key, value_json) VALUES
+    ('max_basket_value', '{"limitPaise": 250000}'),
+    ('hourly_spend_cap', '{"limitPaise": 500000}'),
+    ('velocity_max_checkouts', '{"maxCheckouts": 4}'),
+    ('category_allowlist', '{"categories": ["office", "it", "supplies"]}'),
+    ('approval_above', '{"thresholdPaise": 100000}');
+
   CREATE TABLE IF NOT EXISTS products (
     sku         TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -16,6 +28,8 @@ db.exec(`
     stock       INTEGER NOT NULL
   );
   
+  
+
   CREATE TABLE IF NOT EXISTS mandates (
     id TEXT PRIMARY KEY,
     buyer_id TEXT NOT NULL,
@@ -382,4 +396,23 @@ export function saveNegotiationSession(sessionId, merchantId, sessionObj) {
 export function getNegotiationSessionRow(sessionId) {
   const row = getNegSessionStmt.get(sessionId);
   return row ? JSON.parse(row.session_json) : undefined;
+}
+
+
+const getPolicyConfigStmt = db.query("SELECT value_json FROM policy_configs WHERE key = ?");
+const updatePolicyConfigStmt = db.query("UPDATE policy_configs SET value_json = ? WHERE key = ?");
+const getAllPolicyConfigsStmt = db.query("SELECT key, value_json FROM policy_configs");
+
+export function getPolicyConfig(key, defaultValue) {
+  const row = getPolicyConfigStmt.get(key);
+  return row ? JSON.parse(row.value_json) : defaultValue;
+}
+
+export function updatePolicyConfig(key, valueObj) {
+  updatePolicyConfigStmt.run(JSON.stringify(valueObj), key);
+}
+
+export function getAllPolicyConfigs() {
+  const rows = getAllPolicyConfigsStmt.all();
+  return rows.map(r => ({ key: r.key, value: JSON.parse(r.value_json) }));
 }

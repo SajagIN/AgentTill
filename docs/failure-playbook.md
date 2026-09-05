@@ -27,3 +27,9 @@ The autonomous agent delegates all policy adherence to the programmatic "money a
 - **Detection**: `retotalFromCatalog` checks cart items vs live DB. Mismatch yields `422 AMOUNT_MISMATCH`. M2 security check.
 - **Response**: Throws `MoneyActionError(422)`.
 - **Agent Behavior**: Currently crashes loop safely since quote mismatch is fatal and signals possible prompt drift.
+
+### Frontend Unfixable Environment Lock (React 19 Schedulers)
+- **Detection**: APIs begin timing out or the React DOM entirely stops executing rerenders despite Network logs showing HTTP success.
+- **Cause**: Synthetic user Chrome Extensions natively overwriting `window.requestIdleCallback`, `window.setTimeout`, and `window.fetch`, mutating the return types required by React 19's fundamental execution scheduler loop.
+- **Response**: The `cleanFetch.ts` module generates a hidden `HTMLIFrameElement`, resolving `window.fetch` cleanly prior to extension mutation cascades, extracting the pristine fetch reference.
+- **Agent Behavior (UI)**: SPA utilizes the pristine `cleanFetch` for all polling against backend, sidestepping global mutated event-schedulers safely.

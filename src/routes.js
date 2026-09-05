@@ -7,8 +7,10 @@ import { listApprovals, resolveApproval } from "./approvals.js";
 import { getMissionTimeline, getMissionReceipt } from "./audit.js";
 import { getMandate, createMandate, revokeMandate } from "./mandates.js";
 import { findOrder } from "./db.js";
+import { runMission } from "./agent/agent.js";
 import { config } from "./config.js";
 import { processRfq, getSession } from "./negotiation.js";
+import { getAllPolicyConfigs, getPolicyConfig, updatePolicyConfig } from "./db.js";
 export const api = express.Router();
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -166,8 +168,31 @@ api.post("/missions", (req, res) => {
       },
     });
   }
-  const { missionId } = createMission(parsed.data);
-  return res.status(201).json({ missionId });
+  const mission = createMission(parsed.data);
+
+  // Start the background agent
+  runMission(mission)
+    .then((result) => {
+      if (!result || result.status === 'rate_limited') {
+        import("./missions.js").then(({ getMission, transition }) => {
+          const m = getMission(mission.missionId);
+          if (m && !['CONFIRMED', 'CANCELLED', 'REFUNDED', 'ESCALATED', 'FAILED_FINAL'].includes(m.state)) {
+             try { transition(mission.missionId, 'CANCELLED'); } catch(e) {}
+          }
+        });
+      }
+    })
+    .catch((err) => {
+      console.error(`Agent failure for ${mission.missionId}:`, err);
+      import("./missions.js").then(({ getMission, transition }) => {
+        const m = getMission(mission.missionId);
+        if (m && !['CONFIRMED', 'CANCELLED', 'REFUNDED', 'ESCALATED', 'FAILED_FINAL'].includes(m.state)) {
+           try { transition(mission.missionId, 'CANCELLED'); } catch(e) {}
+        }
+      }).catch(e => console.error(e));
+    });
+
+  return res.status(201).json({ missionId: mission.missionId });
 });
 
 api.get("/missions", (_req, res) => {
@@ -212,12 +237,7 @@ api.get("/audit/:correlationId", wrap(async (req, res) => {
   }
 
   if (timeline.length === 0) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: `no timeline found for correlationId: ${parsed.data}`,
-      },
-    });
+    return res.status(200).json({ timeline: [] });
   }
 
   return res.status(200).json({ timeline });
@@ -364,3 +384,20 @@ api.get("/audit/:correlationId/receipt", wrap(async (req, res) => {
   }
   return res.status(200).json(receipt);
 }));
+
+api.get("/policies", (req, res) => {
+  const configs = getAllPolicyConfigs();
+  res.json(configs);
+});
+
+api.put("/policies/:key", (req, res) => {
+  const { key } = req.params;
+  const value = req.body;
+  if (!value) return res.status(400).json({ error: "missing body" });
+  try {
+    updatePolicyConfig(key, value);
+    res.json({ ok: true, key, value });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});

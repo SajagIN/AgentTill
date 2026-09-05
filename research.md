@@ -212,4 +212,5 @@ approvals(id, mission_id, rule_evals, reason, state, decided_by, decided_at, cre
 
 - Razorpay API Docs: https://razorpay.com/docs/api
 - Bun SQLite: https://bun.sh/docs/api/sqlite
-- Model Context Protocol: https://modelcontextprotocol.io
+- Model Context Protocol: https://modelcontextprotocol.io| 2026-09-01 | React 19 / Chrome Extension Schedulers Conflict | Implemented `cleanFetch.ts` to execute APIs on an isolated window object via hidden iframe |
+| 2026-09-01 | Agent architecture transition | Transitioned from legacy vanilla JS Dashboard to a full Vite + React 19 SPA |
