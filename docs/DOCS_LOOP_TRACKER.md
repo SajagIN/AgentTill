@@ -4,8 +4,8 @@
 - [x] 00_DOCUMENTATION_GUIDE.md
 - [x] README.md
 - [x] PLAN.md
-- [ ] specs/Memory.md
-- [ ] specs/PRD.md
+- [x] specs/Memory.md
+- [x] specs/PRD.md
 - [ ] specs/Architecture.md
 - [ ] specs/Design.md
 - [ ] specs/Rules.md

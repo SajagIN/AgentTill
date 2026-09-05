@@ -1,18 +1,25 @@
 # AgentTill Development Memory
 
-## Core Principles
-1. **Zero Trust LLM Boundaries (M1/M2)**: The AI does not generate prices or call Razorpay directly. It formulates a cart (`cartId`), and `money-actions.js` fetches truth from the database, executing the API call. M2 boundary enforces absolute catalog pricing matches.
-2. **Immutable Auditing**: All gateway state transitions (create, approve, capture, reject, fail) must append an immutable event.
-3. **Deterministic State Workflows**: Missions strictly adhere to `PLANNING -> QUOTED -> POLICY_CHECK -> PAYING -> CONFIRMED | FAILED | REJECTED`.
+This document tracks the temporal memory and foundational principles underlying the architecture of AgentTill, matching the structure dictated in `docs/00_DOCUMENTATION_GUIDE.md`.
 
-## Completed Phases
-- **Phase 1-2**: SQLite schema, basic web server, webhook handler with HMAC-SHA256 signature verification.
-- **Phase 3**: Decoupled `money-actions.js`.
-- **Phase 4-5**: `policy-engine.js` implemented with 7 rules (max limits, velocity, budget limits, categories). Rule evaluations generate hit-by-hit audit events. Added multi-leaf Merkle Receipts for receipt generation.
-- **Phase 6**: Built `agent/agent.js` autonomous polling loop. Added rate-limit (429) fallback and replanning logic (cart-culling based on policy REJECTED results). 
-- **Phase 7**: Authored `failure-playbook.md` highlighting rate limitations, invariant violations (422), and state lock protections.
-- **Phase 8**: Authored `Research.md`. Documented RazorpayX Corporate Cards, Smart Collect, and Route applicability. Finished README.md architecture diagrams. Fully configured test runner using `bun test`.
+## Core Foundational Truths
+1. **Zero Trust LLM Boundaries (M1/M2)**: 
+   - **Theoretical vs Actual**: generative AI is completely isolated from checkout execution. 
+   - **Path**: The agent formulates a cart, but `src/money-actions.js` fetches absolute truth from the database, executing the API call. M2 boundary enforces strict catalog pricing matches, rejecting hallucinations on syntax.
+2. **Deterministic State Workflows**: 
+   - Missions strictly adhere to chronological locking.
+   - Flow: `PLANNING -> QUOTED -> POLICY_CHECK -> PAYING -> (AWAITING_APPROVAL) -> CONFIRMED | FAILED | REJECTED`.
+3. **Immutable Auditing**: 
+   - **Path**: `src/audit.js`
+   - All gateway state transitions (create, approve, capture, reject, fail) must append an immutable event. Approval/Capture operations emit a 4-leaf cryptographic Merkle root reflecting the invoice sum.
 
-## Run Instruction
-- Initialize `.env`: `cp .env.example .env` and inject standard Test Keys.
-- Interactive mode requires `bun scripts/demo-mission.js`.
+## Temporal Progression (Phases)
+- **Phase 1-2**: SQLite schema, `src/server.js`, webhook handler mapped to `src/webhooks.js` with HMAC-SHA256 signature verification.
+- **Phase 3**: Decoupled `src/money-actions.js`.
+- **Phase 4-5**: `src/policy-engine.js` implemented with 7 rules (velocity, scale, ceiling limits). Rule evaluations generate hit-by-hit audit events. Implemented explicit multi-leaf Merkle Receipts for receipt generation.
+- **Phase 6**: Built `src/agent/agent.js` background polling loop. Handled Razorpay API rate-limit (429) fallback and replanning logic (active cart-culling based on policy `REJECTED` results). 
+- **Phase 7**: Authored `docs/failure-playbook.md` highlighting rate limitations, invariant violations (422), and state lock protections.
+- **Phase 8 (React SPA Migration)**: Moved vanilla HTML dashboard to strict `/frontend` React 19 SPA running standard Vite configuration.
+- **Phase 9**: Fixed unfixable React 19 `startTime` scheduler crashes triggered by third-party Chrome extensions mapping over UI threads. Implemented an immutable `cleanFetch.ts` iframe capture to neutralize native scheduler hijack behaviors. Back-ended `/api/*` 404 falls back to strict JSON on `src/server.js`.
+
+*Note: For the official video demo outline, see `PLAN.md`.*
