@@ -1,29 +1,39 @@
-import { defineConfig } from "vite"
-import react from "@vitejs/plugin-react"
-import tailwindcss from "@tailwindcss/vite"
-import path from "path"
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+
+// Everything the browser needs from the backend. In production the Express
+// server serves the built SPA and these same routes from one origin, so the
+// application code can always use relative paths.
+const API_PROXY = {
+  target: "http://localhost:3000",
+  changeOrigin: true,
+};
 
 export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
+    alias: { "@": path.resolve(ROOT, "src") },
   },
   server: {
+    host: true,
+    port: 5173,
+    allowedHosts: true,
     proxy: {
-      '/missions': 'http://localhost:3000',
-      '/approvals': 'http://localhost:3000',
-      '/catalog': 'http://localhost:3000',
-      '/audit': 'http://localhost:3000',
-      '/policies': 'http://localhost:3000',
-      '/pay': 'http://localhost:3000',
-      '/quote': 'http://localhost:3000',
-      '/checkout': 'http://localhost:3000',
-      '/negotiate': 'http://localhost:3000',
-    }
-  }
-})
+      "/api": API_PROXY,
+      "/pay": API_PROXY,
+      "/webhooks": API_PROXY,
+      "/mcp": API_PROXY,
+      "/health": API_PROXY,
+    },
+  },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+  },
+});

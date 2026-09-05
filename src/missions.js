@@ -1,13 +1,5 @@
 import { insertMission, getMissionRow, setMissionState, listMissions } from "./db.js";
-
-export class TransitionError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "TransitionError";
-    this.status = 409;
-    this.code = "INVALID_TRANSITION";
-  }
-}
+import { TransitionError } from "./errors.js";
 
 // Valid state transitions. Terminal states map to [].
 const ALLOWED = {

@@ -2,33 +2,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { isDuplicateWebhookEvent, recordWebhookEvent } from "./db.js";
 import { confirmPayment, noteFailedPayment, noteRefundProcessed } from "./money-actions.js";
+import {
+  WebhookMisconfiguredError,
+  WebhookPayloadError,
+  WebhookVerificationError,
+} from "./errors.js";
 
-export class WebhookVerificationError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "WebhookVerificationError";
-    this.status = 401;
-    this.code = "WEBHOOK_SIGNATURE_INVALID";
-  }
-}
-
-export class WebhookMisconfiguredError extends Error {
-  constructor() {
-    super("RAZORPAY_WEBHOOK_SECRET is not configured — refusing to process webhooks");
-    this.name = "WebhookMisconfiguredError";
-    this.status = 503;
-    this.code = "WEBHOOK_SECRET_MISSING";
-  }
-}
-
-export class WebhookPayloadError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "WebhookPayloadError";
-    this.status = 400;
-    this.code = "WEBHOOK_PAYLOAD_INVALID";
-  }
-}
 
 const SUPPORTED_EVENT_TYPES = new Set(["payment.captured", "payment.failed", "refund.processed"]);
 

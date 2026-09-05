@@ -15,8 +15,6 @@ const EnvSchema = z.object({
     .min(1, "RAZORPAY_KEY_SECRET must not be empty"),
 
   RAZORPAY_WEBHOOK_SECRET: z.string().default(""),
-  OPENAI_API_KEY: z.string().default(""),
-  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
 
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -37,6 +35,4 @@ export const config = Object.freeze({
   razorpayKeyId: parsed.data.RAZORPAY_KEY_ID,
   razorpayKeySecret: parsed.data.RAZORPAY_KEY_SECRET,
   razorpayWebhookSecret: parsed.data.RAZORPAY_WEBHOOK_SECRET,
-  openaiApiKey: parsed.data.OPENAI_API_KEY,
-  openaiModel: parsed.data.OPENAI_MODEL,
 });

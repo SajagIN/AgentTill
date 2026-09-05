@@ -1,7 +1,12 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
-const DB_PATH = "agenttill.db";
+// Pinned to the repository root so the same database is used no matter which
+// directory the server is started from.
+const DB_PATH = process.env.AGENTTILL_DB_PATH
+  ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../agenttill.db");
 
 export const db = new Database(DB_PATH, { create: true });
 db.exec("PRAGMA journal_mode = WAL;");
@@ -27,8 +32,6 @@ db.exec(`
     price_paise INTEGER NOT NULL,
     stock       INTEGER NOT NULL
   );
-  
-  
 
   CREATE TABLE IF NOT EXISTS mandates (
     id TEXT PRIMARY KEY,
@@ -92,7 +95,6 @@ db.exec(`
     received_at  TEXT NOT NULL
   );
 
-  
   CREATE TABLE IF NOT EXISTS negotiation_sessions (
     id TEXT PRIMARY KEY,
     merchant_id TEXT NOT NULL,
@@ -194,6 +196,7 @@ const clearWebhookEventsStmt = db.query("DELETE FROM webhook_events");
 
 const clearMissionsStmt = db.query("DELETE FROM missions");
 const clearAuditStmt = db.query("DELETE FROM audit_events");
+const clearNegSessionsStmt = db.query("DELETE FROM negotiation_sessions");
 
 function rowToProduct(row) {
   return {
@@ -374,9 +377,9 @@ export function resetDemoData() {
     clearAuditStmt.run();
     clearOrdersStmt.run();
     clearMissionsStmt.run();
-    
     clearMandatesStmt.run();
     clearCartsStmt.run();
+    clearNegSessionsStmt.run();
     clearProductsStmt.run();
   })();
 }
@@ -387,8 +390,6 @@ const insertNegSessionStmt = db.query(
 const getNegSessionStmt = db.query(
   "SELECT session_json FROM negotiation_sessions WHERE id = ?"
 );
-const clearNegSessionsStmt = db.query("DELETE FROM negotiation_sessions");
-
 export function saveNegotiationSession(sessionId, merchantId, sessionObj) {
   insertNegSessionStmt.run(sessionId, merchantId, JSON.stringify(sessionObj), new Date().toISOString());
 }

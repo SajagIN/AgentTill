@@ -1,11 +1,14 @@
-specs/
 node_modules/
+dist/
+.build-check/
+
+# Environment & data
 .env
 *.db
 *.db-wal
 *.db-shm
-cloudflared.exe
-server.log
-reference/
-refenerece/
-tmp/
+
+# Build/editor cruft
+*.tsbuildinfo
+*.log
+.DS_Store

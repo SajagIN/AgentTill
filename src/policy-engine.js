@@ -6,8 +6,6 @@ export function authorize({ actorId, actorType, action, amountPaise, ctx }) {
   if (!Number.isInteger(amountPaise) || amountPaise < 0) {
     throw new TypeError(`amountPaise must be a non-negative integer (got ${amountPaise}) — M1`);
   }
-  void actorId;
-  void actorType;
 
   const ruleEvals = [];
   for (const r of POLICY_RULES) {

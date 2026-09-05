@@ -3,19 +3,12 @@ import { authorize } from "./policy-engine.js";
 import { RULES_VERSION } from "./policy-rules.js";
 import { appendEvent, getCheckoutWindowStats } from "./audit.js";
 import { findCart, findProduct, saveOrder, findOrder, findOrderByPayment, setOrderStatus, findLatestOrderByMission } from "./db.js";
-import { createMission, getMission, transition, TransitionError } from "./missions.js";
+import { createMission, getMission, transition } from "./missions.js";
 import { createApproval, getApproval } from "./approvals.js";
+import { MoneyActionError, TransitionError } from "./errors.js";
+import { config } from "./config.js";
 
 const SYSTEM_ACTOR = { type: "system", id: "razorpay-webhook" };
-
-class MoneyActionError extends Error {
-  constructor(status, code, message) {
-    super(message);
-    this.name = "MoneyActionError";
-    this.status = status;
-    this.code = code;
-  }
-}
 
 // Re-total cart lines from CURRENT catalog prices (M2: server-side pricing only).
 function retotalFromCatalog(lines) {
@@ -192,7 +185,7 @@ export async function createOrder({ missionId, cartId, actor, approvalId }) {
         // For Razorpay test mode exhaustion, provide our own internal checkout interface
         link = {
           id: `fallback_${order.id}`,
-          short_url: `http://localhost:3000/pay/${order.id}`
+          short_url: `${config.baseUrl}/pay/${order.id}`,
         };
       } else {
         throw linkErr;
@@ -584,7 +577,7 @@ export async function retryPayment({ orderId, missionId, attempt, actor }) {
         console.warn(`[money] Payment Link creation failed due to test limits on RETRY. Falling back to Standard Checkout URL for order ${newOrder.id}`);
         link = {
           id: `fallback_${newOrder.id}`,
-          short_url: `http://localhost:3000/pay/${newOrder.id}`
+          short_url: `${config.baseUrl}/pay/${newOrder.id}`,
         };
       } else {
         throw linkErr;

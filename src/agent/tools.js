@@ -1,78 +1,99 @@
-const BASE_URL = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
-async function handleResponse(res) {
+import { config } from "../config.js";
+
+/**
+ * The buyer agent talks to AgentTill over HTTP, exactly like any external
+ * agent would. Every route lives under the `/api` mount — see src/server.js.
+ *
+ * `startServer()` calls setAgentApiBase() once it knows the port it actually
+ * bound, so an in-process agent always reaches the server beside it instead of
+ * whatever BASE_URL happened to say.
+ */
+let apiBaseOverride = null;
+
+export function setAgentApiBase(url) {
+  apiBaseOverride = `${url.replace(/\/$/, "")}/api`;
+}
+
+function apiBase() {
+  return apiBaseOverride ?? `${config.baseUrl.replace(/\/$/, "")}/api`;
+}
+
+/** Statuses that will not change by retrying, so the agent must stop at once. */
+const NON_RETRYABLE = new Set([400, 404, 422]);
+
+class ApiError extends Error {
+  constructor(status, code, message, body) {
+    super(`[${status}] ${message}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.body = body;
+    this.retryable = !NON_RETRYABLE.has(status);
+  }
+}
+
+async function request(path, init) {
+  let res;
+  try {
+    res = await fetch(`${apiBase()}${path}`, init);
+  } catch (cause) {
+    const err = new ApiError(0, "NETWORK_ERROR", `cannot reach AgentTill API at ${apiBase()}${path}: ${cause.message}`);
+    err.cause = cause;
+    throw err;
+  }
+
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      body?.error?.message ??
-      body?.message ??
-      `HTTP ${res.status} ${res.statusText}`;
-    const err = new Error(`[${res.status}] ${message}`);
-    err.status = res.status;
-    err.code = body?.error?.code ?? "HTTP_ERROR";
-    err.body = body;
-    throw err;
+    throw new ApiError(
+      res.status,
+      body?.error?.code ?? "HTTP_ERROR",
+      body?.error?.message ?? res.statusText ?? "request failed",
+      body,
+    );
   }
   return body;
 }
 
+const jsonInit = (method, body) => ({
+  method,
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+/** @returns {Promise<Array<{sku:string,name:string,category:string,pricePaise:number,stock:number}>>} */
 export async function searchCatalog(query) {
-  const res = await fetch(`${BASE_URL}/catalog`);
-  const body = await handleResponse(res);
-  const products = body.products ?? [];
+  const { products = [] } = await request("/catalog");
   if (!query) return products;
   const needle = query.toLowerCase();
-  return products.filter((p) =>
-    p.sku.toLowerCase().includes(needle) ||
-    p.name.toLowerCase().includes(needle) ||
-    p.category.toLowerCase().includes(needle)
+  return products.filter(
+    (p) =>
+      p.sku.toLowerCase().includes(needle) ||
+      p.name.toLowerCase().includes(needle) ||
+      p.category.toLowerCase().includes(needle),
   );
 }
 
+/** @returns {Promise<{cartId:string,totalPaise:number,items:Array}>} */
 export async function getQuote(items) {
-  const res = await fetch(`${BASE_URL}/quote`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
-  });
-  const body = await handleResponse(res);
+  const body = await request("/quote", jsonInit("POST", { items }));
   return { cartId: body.cartId, totalPaise: body.totalPaise, items: body.items };
 }
 
+/**
+ * Begin checkout. A 403 is a policy verdict, not a transport failure, so it is
+ * returned to the agent (which can re-plan) rather than thrown.
+ */
 export async function beginCheckout(cartId, missionId) {
   const payload = { cartId };
   if (missionId != null) payload.missionId = missionId;
-
-  const res = await fetch(`${BASE_URL}/checkout`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+  return request("/checkout", jsonInit("POST", payload)).catch((err) => {
+    if (err.status === 403) return err.body;
+    throw err;
   });
-
-  if (res.status === 403) {
-    const body = await res.json().catch(() => ({}));
-    return body;
-  }
-
-  return handleResponse(res);
-}
-
-export async function approve(approvalId) {
-  const res = await fetch(`${BASE_URL}/approvals/${encodeURIComponent(approvalId)}/approve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  });
-  return handleResponse(res);
-}
-
-export async function deny(approvalId) {
-  const res = await fetch(`${BASE_URL}/approvals/${encodeURIComponent(approvalId)}/deny`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  });
-  return handleResponse(res);
 }
 
 export async function getMissionStatus(missionId) {
-  const res = await fetch(`${BASE_URL}/missions/${encodeURIComponent(missionId)}`);
-  return handleResponse(res);
+  return request(`/missions/${encodeURIComponent(missionId)}`);
 }
+
+export { ApiError };

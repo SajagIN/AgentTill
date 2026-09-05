@@ -1,28 +1,7 @@
 import Razorpay from "razorpay";
 import { config } from "./config.js";
+import { RazorpayApiError } from "./errors.js";
 
-function describeCause(cause) {
-  if (!cause) return "unknown error";
-  if (typeof cause === "string") return cause;
-  if (cause.message) return String(cause.message);
-  try {
-    return JSON.stringify(cause);
-  } catch {
-    return String(cause);
-  }
-}
-
-export class RazorpayApiError extends Error {
-  constructor(op, context, cause) {
-    super(`Razorpay ${op} failed${context ? ` [${context}]` : ""}: ${describeCause(cause)}`);
-    this.name = "RazorpayApiError";
-    this.status = 502;
-    this.code = "RAZORPAY_API_ERROR";
-    this.op = op;
-    this.context = context;
-    this.cause = cause;
-  }
-}
 
 const rzp = new Razorpay({
   key_id: config.razorpayKeyId,
