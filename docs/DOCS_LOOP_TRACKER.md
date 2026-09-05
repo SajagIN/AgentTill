@@ -2,8 +2,8 @@
 
 ## Status
 - [x] 00_DOCUMENTATION_GUIDE.md
-- [ ] README.md
-- [ ] PLAN.md
+- [x] README.md
+- [x] PLAN.md
 - [ ] specs/Memory.md
 - [ ] specs/PRD.md
 - [ ] specs/Architecture.md
