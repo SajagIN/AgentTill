@@ -1,56 +1,144 @@
 import { useState } from "react";
+import { Activity, FileKey2, Search } from "lucide-react";
+
+import { PageHeader } from "@/components/page-header";
+import { AuditTimeline } from "@/components/audit-timeline";
+import { MerkleReceipt } from "@/components/merkle-receipt";
+import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
-import { cleanFetch } from "@/cleanFetch";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { api, ApiError } from "@/lib/api";
+import { useResource } from "@/lib/use-resource";
+import type { AuditEvent, MerkleReceipt as Receipt, Mission } from "@/lib/types";
 
+/**
+ * Audit Trail — the tamper-evident record.
+ *
+ * Every money action writes an append-only row, including denials and failures.
+ * Each mission's rows fold into a 4-leaf Merkle tree, so the stored history can
+ * be checked for removal or reordering after the fact.
+ */
 export function AuditView() {
-  const [timeline, setTimeline] = useState<any[]>([]);
-  const [mid, setMid] = useState("");
-  const [error, setError] = useState("");
+  const missions = useResource<Mission[]>(() =>
+    api.get<{ missions: Mission[] }>("/api/missions").then((r) => r.missions),
+  );
+  const [selected, setSelected] = useState("");
+  const [input, setInput] = useState("");
 
-  const search = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!mid.trim()) return;
-    setError("");
-    const res = await cleanFetch(`/api/audit/${mid}`);
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error?.message || "Not found");
-      setTimeline([]);
-    } else {
-      setTimeline(data.timeline);
-    }
-  };
+  const correlationId = selected || input.trim();
+  const timeline = useResource<AuditEvent[]>(
+    () =>
+      correlationId
+        ? api.get<{ timeline: AuditEvent[] }>(`/api/audit/${encodeURIComponent(correlationId)}`).then((r) => r.timeline)
+        : Promise.resolve([]),
+    { key: correlationId, pollMs: correlationId ? 5000 : undefined },
+  );
+  const receipt = useResource<Receipt | null>(
+    () =>
+      correlationId
+        ? api
+            .get<Receipt>(`/api/audit/${encodeURIComponent(correlationId)}/receipt`)
+            .catch((cause) => (cause instanceof ApiError && cause.status === 404 ? null : Promise.reject(cause)))
+        : Promise.resolve(null),
+    { key: correlationId },
+  );
 
   return (
-    <div className="space-y-6">
-      <form onSubmit={search} className="flex gap-4">
-        <input 
-          value={mid} 
-          onChange={e => setMid(e.target.value)} 
-          placeholder="Mission ID or Correlation ID" 
-          className="border px-4 py-2 rounded-md w-96 flex-1 max-w-md"
-        />
-        <Button type="submit">Search Audit Trail</Button>
-      </form>
+    <div>
+      <PageHeader
+        title="Audit Trail"
+        description="The immutable log of every decision AgentTill made with money — approvals, denials, retries, captures and failures, each with the rule evaluation that produced it."
+        usage="Pick a mission, or paste any correlation id. Denials are recorded too: an agent that was stopped is as auditable as one that spent."
+      />
 
-      {error && <div className="text-red-500 font-medium">{error}</div>}
+      <Card className="mb-8">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Select a mission</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4 md:flex-row md:items-end">
+          <div className="flex-1 space-y-2">
+            <label htmlFor="mission-select" className="text-sm font-medium">
+              Mission
+            </label>
+            <select
+              id="mission-select"
+              value={selected}
+              onChange={(e) => {
+                setSelected(e.target.value);
+                setInput("");
+              }}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            >
+              <option value="">Choose a mission…</option>
+              {(missions.data ?? []).map((mission) => (
+                <option key={mission.missionId} value={mission.missionId}>
+                  {mission.missionId} — {mission.intent}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div className="space-y-4 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300 before:to-transparent">
-        {timeline.map((event, i) => (
-          <div key={i} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-            <div className="flex items-center justify-center w-10 h-10 rounded-full border border-white bg-slate-300 text-slate-500 shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow"></div>
-            <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded-lg border bg-white shadow-sm">
-              <div className="flex items-center justify-between mb-1">
-                <div className="font-bold text-slate-900">{event.event_type}</div>
-                <time className="font-mono text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</time>
-              </div>
-              <div className="text-slate-500 text-sm font-mono whitespace-pre-wrap breakdown-all">
-                {JSON.stringify(JSON.parse(event.payload_json), null, 2)}
-              </div>
+          <div className="flex-1 space-y-2">
+            <label htmlFor="correlation-id" className="text-sm font-medium">
+              Or enter a correlation id
+            </label>
+            <div className="flex gap-2">
+              <Input
+                id="correlation-id"
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  setSelected("");
+                }}
+                placeholder="mission_ab12cd34"
+              />
+              <Button variant="outline" disabled={!input.trim()} onClick={() => timeline.reload()}>
+                <Search className="h-4 w-4" />
+              </Button>
             </div>
           </div>
-        ))}
-      </div>
+        </CardContent>
+      </Card>
+
+      {!correlationId ? (
+        <EmptyState icon={Activity} title="Nothing selected" hint="Choose a mission above to load its trail." />
+      ) : (
+        <Tabs defaultValue="timeline">
+          <TabsList>
+            <TabsTrigger value="timeline">
+              Timeline {timeline.data ? `(${timeline.data.length})` : ""}
+            </TabsTrigger>
+            <TabsTrigger value="receipt">
+              <FileKey2 className="mr-2 h-3.5 w-3.5" />
+              Merkle receipt
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="timeline" className="mt-6">
+            {timeline.error ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{timeline.error}</p>
+            ) : (
+              <AuditTimeline events={timeline.data ?? []} />
+            )}
+          </TabsContent>
+
+          <TabsContent value="receipt" className="mt-6">
+            {receipt.error ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{receipt.error}</p>
+            ) : receipt.data ? (
+              <MerkleReceipt receipt={receipt.data} />
+            ) : (
+              <EmptyState
+                icon={FileKey2}
+                title="No receipt available"
+                hint="A receipt is generated once the mission has at least one audit event."
+              />
+            )}
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }

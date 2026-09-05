@@ -1,136 +1,104 @@
+/**
+ * Scripted walkthrough of one mission, end to end.
+ *
+ *   bun run demo
+ *
+ * Starts the server, seeds the catalog, deploys a mission through the public
+ * HTTP API, and prints what the policy engine decided along with the Merkle
+ * receipt for the resulting audit trail.
+ *
+ * The mission is chosen so it trips the human-approval gate: that path performs
+ * no Razorpay call, so the demo is reproducible with placeholder credentials.
+ */
 import { startServer } from "../src/server.js";
+import { config } from "../src/config.js";
 import { resetDemoData } from "../src/db.js";
 import { seedCatalog } from "../src/catalog.js";
-import { insertMission } from "../src/db.js";
-import { runMission } from "../src/agent/agent.js";
-import { getMissionTimeline } from "../src/audit.js";
+import { getMissionReceipt, getMissionTimeline } from "../src/audit.js";
 
-function paiseToINR(paise) {
-  const rupees = Math.floor(paise / 100);
-  const rem = paise % 100;
-  return `₹${rupees}.${String(rem).padStart(2, "0")}`;
-}
+const BASE = config.baseUrl.replace(/\/$/, "");
+const INR = (paise) =>
+  `₹${new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2 }).format((paise ?? 0) / 100)}`;
 
-function formatTimestamp(iso) {
-  return new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-}
+const RULE = "━".repeat(64);
+const head = (title) => console.log(`\n${RULE}\n  ${title}\n${RULE}\n`);
 
-console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("  AgentTill Demo Mission — Track 01");
-console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+const INTENT = "restock: hubs";
+const BUDGET_PAISE = 200000; // ₹2,000 — the cart is ₹1,899, above the ₹1,000 gate
+const SETTLE_MS = 6000;
 
-// Step 1: Seed database
-console.log("⚙  Seeding database...");
+console.log("AgentTill ▸ demo mission\n");
+console.log("⚙  resetting and seeding the database…");
 resetDemoData();
 seedCatalog();
-console.log("✓  Database seeded\n");
 
-// Step 2: Start server
-console.log("⚙  Starting server...");
 const server = startServer();
-// Wait for server to be ready
-await new Promise(resolve => setTimeout(resolve, 500));
-console.log("✓  Server ready\n");
+await new Promise((resolve) => setTimeout(resolve, 500));
 
-let result;
+let exitCode = 0;
+
 try {
-  // Step 3: Create mission
-  const missionIntent = "restock: notebooks, markers, coffee";
-  const budgetPaise = 200000; // ₹2,000 — will trigger approval (>₹1,000)
+  head("Mission brief");
+  console.log(`Intent   ${INTENT}`);
+  console.log(`Budget   ${INR(BUDGET_PAISE)}`);
 
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("  Mission Brief");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`Intent:  ${missionIntent}`);
-  console.log(`Budget:  ${paiseToINR(budgetPaise)}`);
-  console.log();
+  const created = await fetch(`${BASE}/api/missions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent: INTENT, budgetPaise: BUDGET_PAISE }),
+  }).then((res) => res.json());
 
-  const missionId = insertMission(missionIntent, budgetPaise, "PLANNING");
+  const missionId = created.missionId;
+  console.log(`Mission  ${missionId}`);
 
-  // Step 4: Run buyer agent
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("  Agent Execution");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  head("Agent execution");
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
 
-  const mission = { missionId, intent: missionIntent, budgetPaise };
-  result = await runMission(mission);
+  const { mission, order } = await fetch(`${BASE}/api/missions/${missionId}`).then((res) => res.json());
+  console.log(`State    ${mission.state}`);
+  if (order) console.log(`Order    ${order.orderId} · ${INR(order.amountPaise)}`);
 
-  console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("  Agent Result");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-  if (result) {
-    console.log(`Status:     ${result.status}`);
-    console.log(`Order ID:   ${result.orderId || "—"}`);
-    console.log(`Amount:     ${result.amountPaise ? paiseToINR(result.amountPaise) : "—"}`);
-
-    if (result.status === "needs_approval") {
-      console.log(`Approval:   ${result.approvalId || "—"}`);
-      console.log("\n⚠  Mission paused — approval required");
-      console.log("   Run: curl -X POST http://localhost:3000/approvals/[ID]/approve");
-    }
-
-    if (result.status === "rate_limited") {
-      console.log(`Message:    ${result.message}`);
-      console.log("\n⚠  Razorpay test mode rate limit — visit dashboard to view/close existing payment links");
-    }
-
-    if (result.paymentLinkUrl) {
-      console.log(`Pay:        ${result.paymentLinkUrl}`);
-    }
-  } else if (result?.status === "rate_limited") {
-    console.log(`Status:     ${result.status}`);
-    console.log(`Message:    ${result.message}`);
-  } else {
-    console.log("Status:     failed / denied");
-  }
-
-  // Step 5: Print mission timeline
-  console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("  Audit Timeline");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
+  head("Audit trail");
   const timeline = getMissionTimeline(missionId);
+  if (timeline.length === 0) {
+    console.log("No events recorded — the agent never reached the money layer.");
+  }
   for (const event of timeline) {
-    const ts = formatTimestamp(event.ts);
-    const actionPad = event.action.padEnd(20);
-    console.log(`${ts}  ${actionPad}  ${event.decision?.reason || event.outcome || ""}`);
-
-    if (event.decision) {
-      const details = typeof event.decision === "string" ? JSON.parse(event.decision) : event.decision;
-
-      if (details.ruleEvals) {
-        console.log(`                                          ├─ Rules evaluated: ${details.ruleEvals.length}`);
-        for (const rule of details.ruleEvals) {
-          if (rule.outcome) {
-            const symbol = rule.outcome === "pass" ? "✓" : rule.outcome === "triggered" ? "!" : "✗";
-            console.log(`                                          │  ${symbol} ${rule.ruleId}: ${rule.outcome === "pass" ? "pass" : rule.outcome}`);
-          } else if (rule.result) {
-            const symbol = (rule.result === "pass" || rule.result === "allow") ? "✓" : rule.result === "needs_approval" ? "!" : "✗";
-            console.log(`                                          │  ${symbol} ${rule.ruleId || rule.rule}: ${rule.result}`);
-          }
-        }
-      }
-
-      if (event.amountPaise) {
-        console.log(`                                          ├─ Amount: ${paiseToINR(event.amountPaise)}`);
-      }
+    console.log(`${event.ts}  ${event.action.padEnd(16)}  ${event.outcome.padEnd(18)} ${event.decision?.reason ?? ""}`);
+    for (const rule of event.decision?.ruleEvals ?? []) {
+      const mark = rule.outcome === "pass" ? "✓" : rule.outcome === "triggered" ? "!" : "✗";
+      console.log(`                                            ${mark} ${rule.ruleId}: ${rule.detail}`);
     }
   }
 
-  console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("  Demo Complete");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`Mission ID: ${missionId}`);
-  console.log("Dashboard:  http://localhost:3000/dashboard.html");
-  console.log("\n✓  All systems operational\n");
+  head("Merkle receipt");
+  const receipt = getMissionReceipt(missionId);
+  if (receipt) {
+    console.log(`Root     ${receipt.root}`);
+    console.log(`Topology ${receipt.topology} · ${receipt.nodes.leaves.length} leaves`);
+  } else {
+    console.log("No receipt — the mission has no audit events yet.");
+  }
 
+  head("Next step");
+  if (mission.state === "AWAITING_APPROVAL") {
+    console.log(`The mission is frozen pending a human decision.`);
+    console.log(`  Dashboard  ${BASE}/approvals`);
+    console.log(`  Or by API  curl -X POST ${BASE}/api/approvals/<approvalId>/approve`);
+    console.log(`\nNo Razorpay order exists yet — approving is what creates one.`);
+  } else {
+    console.log(`Mission reached ${mission.state}.`);
+    if (!config.razorpayKeyId.startsWith("rzp_test_") || config.razorpayKeySecret.length < 8) {
+      console.log("Set real Razorpay test-mode keys in .env to exercise the payment path.");
+    }
+  }
+
+  console.log(`\n${RULE}\n  Demo complete · ${missionId}\n${RULE}\n`);
 } catch (error) {
-  console.error("\n✖  Demo failed:", error.message);
+  console.error(`\n✖  demo failed: ${error.message}`);
   console.error(error.stack);
-  process.exit(1);
+  exitCode = 1;
 } finally {
-  // Clean shutdown
   server.close();
-  if(result?.status !== "success" && result?.status !== "needs_approval") process.exit(1); else process.exit(0);
+  process.exit(exitCode);
 }

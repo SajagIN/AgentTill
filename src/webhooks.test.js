@@ -9,11 +9,8 @@
  */
 import { test, expect, beforeAll } from "bun:test";
 import { createHmac } from "node:crypto";
-import {
-  processWebhook,
-  WebhookVerificationError,
-  isSupportedEventType,
-} from "./webhooks.js";
+import { processWebhook, isSupportedEventType } from "./webhooks.js";
+import { WebhookVerificationError } from "./errors.js";
 import { isDuplicateWebhookEvent } from "./db.js";
 
 const secret = process.env.RAZORPAY_WEBHOOK_SECRET;

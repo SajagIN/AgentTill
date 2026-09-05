@@ -1,14 +1,21 @@
 {
   "name": "agenttill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
-    "dev": "bun --watch src/server.js",
-    "smoke": "bun scripts/smoke-order.js",
+    "build": "bun scripts/build.js",
+    "start": "bun src/server.js",
+    "dev": "bun scripts/dev.js",
+    "test": "bun test",
     "seed": "bun scripts/seed.js",
     "demo": "bun scripts/demo-mission.js",
-    "test": "bun test"
+    "smoke": "bun scripts/smoke-order.js",
+    "mcp": "bun src/mcp-server.js",
+    "lint": "bun run --cwd frontend lint"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -17,7 +24,7 @@
     "razorpay": "^2.8.0",
     "zod": "^3.23.0"
   },
-  "devDependencies": {
-    "shadcn": "^4.21.0"
+  "engines": {
+    "bun": ">=1.2.0"
   }
 }

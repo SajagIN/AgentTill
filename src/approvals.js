@@ -6,7 +6,8 @@ import {
   getPendingApprovalForCart,
 } from "./db.js";
 import { appendEvent } from "./audit.js";
-import { getMission, transition, TransitionError } from "./missions.js";
+import { getMission, transition } from "./missions.js";
+import { NotFoundError, TransitionError, ValidationError } from "./errors.js";
 
 const HUMAN = { type: "human", id: "operator" };
 
@@ -30,22 +31,13 @@ export function listApprovals() {
 export function resolveApproval({ approvalId, decision, actor = HUMAN }) {
   const approval = getApprovalRow(approvalId);
   if (!approval) {
-    const err = new Error(`no approval with id ${approvalId}`);
-    err.status = 404;
-    err.code = "APPROVAL_NOT_FOUND";
-    throw err;
+    throw new NotFoundError(`no approval with id ${approvalId}`);
   }
   if (approval.status !== "pending") {
-    const err = new Error(`approval ${approvalId} is already ${approval.status}`);
-    err.status = 409;
-    err.code = "APPROVAL_ALREADY_RESOLVED";
-    throw err;
+    throw new TransitionError(`approval ${approvalId} is already ${approval.status}`);
   }
   if (decision !== "approved" && decision !== "denied") {
-    const err = new Error(`decision must be "approved" or "denied"`);
-    err.status = 400;
-    err.code = "INVALID_DECISION";
-    throw err;
+    throw new ValidationError('decision must be "approved" or "denied"');
   }
 
   setApprovalDecision(approvalId, decision, actor.id);
@@ -71,5 +63,3 @@ export function resolveApproval({ approvalId, decision, actor = HUMAN }) {
   }
   return { ...approval, status: decision, decidedBy: actor.id };
 }
-
-export { TransitionError };
