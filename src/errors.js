@@ -50,8 +50,13 @@ export class TransitionError extends AppError {
 export class MoneyActionError extends AppError {}
 
 export class RazorpayApiError extends AppError {
-  constructor(op, context, cause) {
-    super(502, "RAZORPAY_API_ERROR", `Razorpay ${op} failed${context ? ` [${context}]` : ""}: ${describeCause(cause)}`);
+  /**
+   * `hint` carries caller-side knowledge the SDK could not supply — see
+   * razorpay-client.js, which detects the SDK's lossy error path.
+   */
+  constructor(op, context, cause, hint) {
+    const detail = `Razorpay ${op} failed${context ? ` [${context}]` : ""}: ${describeCause(cause)}`;
+    super(502, "RAZORPAY_API_ERROR", hint ? `${detail} — ${hint}` : detail);
     this.op = op;
     this.context = context;
     this.cause = cause;
